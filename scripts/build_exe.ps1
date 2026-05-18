@@ -26,7 +26,8 @@ Write-Host "Building Whisper Anywhere.exe..."
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
     --collect-all av `
-    --collect-submodules sounddevice `
+    --collect-all sounddevice `
+    --hidden-import win32timezone `
     "src\main.py"
 
 Write-Host ""
