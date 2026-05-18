@@ -1,39 +1,148 @@
-# Whisper App
+# Whisper Anywhere
 
-A Next.js starter app for recording or uploading audio and transcribing it through a server-side OpenAI transcription endpoint.
+Whisper Anywhere is a native Windows 11 desktop app for local Whisper voice typing.
 
-## Included
+Click in any app, hold `Ctrl + Win`, speak, release, and Whisper Anywhere transcribes your speech locally and pastes the text into the focused Windows app.
 
-- Browser microphone recording
-- Audio file upload
-- Model picker for `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, and `whisper-1`
-- Optional language and prompt fields
-- Copy and download actions for transcripts
-- Server-side API route so the API key stays out of the browser
+This is not a web app and it does not use a cloud API in V1.
 
-## Run Locally
+## V1 Features
 
-1. Install Node.js 20 or newer.
-2. Install dependencies:
+- PySide6 Windows desktop window
+- System tray support
+- Global hold-to-talk shortcut: `Ctrl + Win`
+- Optional toggle shortcut mode
+- Shortcut settings UI
+- Microphone selection
+- Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
+- Whisper model selector: `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3`, `turbo`
+- Local transcription with `faster-whisper`
+- Clipboard paste insertion into the focused Windows app
+- Restore previous plain-text clipboard after paste
+- Automatic local folder creation
+- Automatic selected-model preparation/download when enabled
+- Clean shutdown of tray, keyboard hook, and microphone resources
 
-```bash
-npm install
+## Normal User Workflow
+
+After the app is built into an EXE, the user should not need to install Python, run pip, download models manually, configure environment variables, or start background scripts.
+
+1. Open `Whisper Anywhere.exe`.
+2. The app creates its local settings and model folders.
+3. The app checks the selected Whisper model.
+4. If the model is missing, the app prepares/downloads it automatically when enabled.
+5. Click into any text field or app.
+6. Hold `Ctrl + Win`.
+7. Speak.
+8. Release `Ctrl + Win`.
+9. Text appears where the cursor was.
+
+## Developer Setup From Source
+
+These steps are only for building or developing the app from the GitHub source code. End users should use the built EXE.
+
+### 1. Clone the repo
+
+```powershell
+git clone https://github.com/aSimpleLife-Lab/whisper-app.git
+cd whisper-app
 ```
 
-3. Create `.env.local` from `.env.example` and add your OpenAI API key.
-4. Start the app:
+### 2. Create a virtual environment
 
-```bash
-npm run dev
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-5. Open `http://localhost:3000`.
+### 3. Install dependencies
 
-## Notes
+```powershell
+pip install -r requirements.txt
+```
 
-The app sends completed audio recordings or uploaded files to `/api/transcribe`, which forwards them to OpenAI's audio transcription endpoint. OpenAI currently documents a 25 MB upload limit for speech-to-text files.
+### 4. Run the app
 
-Useful docs:
+```powershell
+python .\src\main.py
+```
 
-- https://platform.openai.com/docs/guides/speech-to-text
-- https://platform.openai.com/docs/api-reference/audio/createTranscription
+## How To Test The Shortcut
+
+1. Start Whisper Anywhere.
+2. Wait until the selected model says it is ready. The first model preparation can take a while because it downloads model files.
+3. Open Notepad or PowerShell.
+4. Click where text should appear.
+5. Hold `Ctrl` first, then hold `Win`.
+6. Speak a short sentence.
+7. Release `Ctrl + Win`.
+8. The transcribed text should paste into the app you clicked.
+
+If the Start menu opens, press `Ctrl` first and then `Win`. You can also change the shortcut in the app.
+
+## Build The EXE
+
+Run this on Windows 11:
+
+```powershell
+.\scripts\build_exe.ps1
+```
+
+The output will be:
+
+```text
+dist\Whisper Anywhere\Whisper Anywhere.exe
+```
+
+The EXE bundles Python and Python dependencies. Whisper model files are not bundled because they are large; the app downloads/prepares the selected model automatically on first use and stores it locally.
+
+## Local Files
+
+Settings:
+
+```text
+%APPDATA%\Whisper Anywhere\settings.json
+```
+
+Models:
+
+```text
+%LOCALAPPDATA%\Whisper Anywhere\models
+```
+
+Temporary recordings:
+
+```text
+%TEMP%\Whisper Anywhere
+```
+
+Temporary recordings are deleted after transcription by default.
+
+## V1 Limitations
+
+- No history page yet.
+- No file transcription tab yet.
+- No cloud API mode yet.
+- No command replacements yet, so saying `slash` will transcribe as the word `slash` for now.
+- Clipboard restore preserves previous plain text only in V1, not rich clipboard formats like images or Word formatting.
+- Typing into elevated Administrator apps may require running Whisper Anywhere as Administrator too.
+- The first model setup can take time and needs internet access.
+- GPU mode exists in settings storage but V1 defaults to CPU for reliability.
+
+## Troubleshooting
+
+### No microphone found
+
+Check Windows Settings > Privacy & security > Microphone and make sure desktop apps can access the microphone.
+
+### Shortcut does not start recording
+
+Restart the app. If it still fails, change the shortcut in the app. Some security software may block global keyboard hooks.
+
+### Text does not appear in the target app
+
+Try the default clipboard paste mode. If the target app is running as Administrator, run Whisper Anywhere as Administrator too.
+
+### Model download fails
+
+Check internet access, available disk space, and permissions for `%LOCALAPPDATA%\Whisper Anywhere\models`.
