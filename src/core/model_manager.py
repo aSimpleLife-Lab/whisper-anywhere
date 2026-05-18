@@ -77,10 +77,7 @@ class ModelManager:
         return self.model_storage_path() / f".{safe_name}.ready.json"
 
     def is_model_ready(self, model_name: str | None = None) -> bool:
-        marker = self.marker_path(model_name)
-        if marker.exists():
-            return True
-        return any(self.model_storage_path().glob("models--*"))
+        return self.marker_path(model_name).exists()
 
     def mark_model_ready(self, model_name: str | None = None) -> None:
         selected = model_name or self.selected_model()
