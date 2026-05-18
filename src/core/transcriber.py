@@ -52,9 +52,19 @@ class Transcriber:
             segments, _info = model.transcribe(audio_path, **kwargs)
             text = " ".join(segment.text.strip() for segment in segments).strip()
         except Exception as exc:
-            raise TranscriptionError(
-                "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
-            ) from exc
+            if self._should_retry_on_cpu(settings):
+                try:
+                    fallback_model = self._load_cpu_fallback_model(settings)
+                    segments, _info = fallback_model.transcribe(audio_path, **kwargs)
+                    text = " ".join(segment.text.strip() for segment in segments).strip()
+                except Exception as fallback_exc:
+                    raise TranscriptionError(
+                        "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
+                    ) from fallback_exc
+            else:
+                raise TranscriptionError(
+                    "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
+                ) from exc
 
         self.model_manager.mark_model_ready()
         return " ".join(text.split())
@@ -113,6 +123,22 @@ class Transcriber:
         if runtime.device == "cpu" and runtime.cpu_threads is not None:
             kwargs["cpu_threads"] = runtime.cpu_threads
         return whisper_model_class(backend_name, **kwargs)
+
+    def _should_retry_on_cpu(self, settings: dict[str, Any]) -> bool:
+        return bool(settings.get("fallback_to_cpu", True)) and self._loaded_key is not None and self._loaded_key[2] == "cuda"
+
+    def _load_cpu_fallback_model(self, settings: dict[str, Any]):
+        from faster_whisper import WhisperModel
+
+        model_name = self.model_manager.selected_model()
+        backend_name = self.model_manager.backend_model_name(model_name)
+        model_path = str(Path(str(settings.get("model_path"))).expanduser())
+        fallback_runtime = RuntimeOptions(device="cpu", compute_type="int8", cpu_threads=self._parse_cpu_threads(settings))
+        fallback_key = (backend_name, model_path, fallback_runtime.device, fallback_runtime.compute_type, fallback_runtime.cpu_threads)
+        self._model = self._create_model(WhisperModel, backend_name, model_path, fallback_runtime)
+        self._loaded_key = fallback_key
+        self.runtime_message = "GPU transcription failed, so Whisper Anywhere continued on CPU with safe int8 precision."
+        return self._model
 
     def _resolve_runtime_options(self, settings: dict[str, Any]) -> RuntimeOptions:
         messages: list[str] = []
