@@ -112,18 +112,22 @@ class AudioRecorder:
 
         return output_path
 
+    def cancel(self) -> None:
+        stream = self._stream
+        self._stream = None
+        self.is_recording = False
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._frames = []
+        self._level_callback = None
+
     def close(self) -> None:
-        if self.is_recording:
-            try:
-                self.stop()
-            except Exception:
-                pass
-        elif self._stream is not None:
-            try:
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
+        self.cancel()
 
     def _on_audio(self, indata: np.ndarray, frames: int, time_info: object, status: sd.CallbackFlags) -> None:
         if status:
