@@ -28,6 +28,8 @@ VK_RMENU = 0xA5
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
 MODIFIER_VKS = {
     "ctrl": {VK_CONTROL, VK_LCONTROL, VK_RCONTROL},
     "shift": {VK_SHIFT, VK_LSHIFT, VK_RSHIFT},
@@ -75,7 +77,7 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", wintypes.DWORD),
         ("flags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ULONG_PTR),
     ]
 
 
@@ -180,6 +182,7 @@ class HotkeyListener(QObject):
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._hook_handle = None
+        self._suppress_win_until_up = False
         self._callback = LowLevelKeyboardProc(self._keyboard_proc)
 
     def start(self) -> None:
@@ -203,6 +206,7 @@ class HotkeyListener(QObject):
         self._pressed_vks.clear()
         self._shortcut_active = False
         self._toggle_listening = False
+        self._suppress_win_until_up = False
 
     def _run_message_loop(self) -> None:
         self._thread_id = kernel32.GetCurrentThreadId()
@@ -258,7 +262,7 @@ class HotkeyListener(QObject):
                 else:
                     self.released.emit()
 
-        if self._should_suppress_event(vk_code, was_active, is_active):
+        if self._should_suppress_event(vk_code, is_down, is_up, was_active, is_active):
             return 1
         return user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
 
@@ -270,10 +274,17 @@ class HotkeyListener(QObject):
             return False
         return True
 
-    def _should_suppress_event(self, vk_code: int, was_active: bool, is_active: bool) -> bool:
+    def _should_suppress_event(self, vk_code: int, is_down: bool, is_up: bool, was_active: bool, is_active: bool) -> bool:
         if vk_code not in (VK_LWIN, VK_RWIN):
             return False
         if "win" not in self.shortcut.modifiers:
             return False
+
         ctrl_is_down = bool(self._pressed_vks.intersection(MODIFIER_VKS["ctrl"]))
-        return was_active or is_active or ctrl_is_down
+        if is_down and (ctrl_is_down or was_active or is_active):
+            self._suppress_win_until_up = True
+            return True
+        if is_up and self._suppress_win_until_up:
+            self._suppress_win_until_up = False
+            return True
+        return was_active or is_active
