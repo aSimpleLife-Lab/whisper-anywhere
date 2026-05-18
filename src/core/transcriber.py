@@ -193,13 +193,18 @@ class Transcriber:
             return False
 
         try:
-            if hasattr(ctranslate2, "get_cuda_device_count"):
-                return int(ctranslate2.get_cuda_device_count()) > 0
+            get_count = getattr(ctranslate2, "get_cuda_device_count", None)
+            if get_count is not None:
+                return int(get_count()) > 0
         except Exception:
             return False
 
         try:
-            return bool(self._supported_compute_types("cuda"))
+            try:
+                supported = ctranslate2.get_supported_compute_types("cuda")
+            except TypeError:
+                supported = ctranslate2.get_supported_compute_types("cuda", 0)
+            return bool(supported)
         except Exception:
             return False
 
