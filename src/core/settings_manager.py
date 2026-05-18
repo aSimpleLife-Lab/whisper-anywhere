@@ -28,14 +28,23 @@ def default_model_path() -> str:
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "selected_model": "medium",
+    "selected_model": "base",
     "microphone_device": "default",
     "shortcut": "Ctrl+Win",
     "shortcut_mode": "hold",
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
-    "auto_download_model": True,
+    "device": "auto",
+    "compute_type": "auto",
+    "performance_preset": "balanced",
+    "use_gpu_if_available": True,
+    "fallback_to_cpu": True,
+    "low_ram_mode": False,
+    "low_vram_mode": False,
+    "warn_before_large_models": True,
+    "cpu_threads": "auto",
+    "auto_download_models": True,
     "auto_punctuation": False,
     "auto_capitalization": False,
     "add_space_after_text": False,
@@ -46,7 +55,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "show_overlay": False,
     "save_history": False,
     "model_path": default_model_path(),
-    "use_gpu": False,
     "language_mode": "auto",
     "forced_language": "",
     "translate_to_english": False,
@@ -85,13 +93,17 @@ class SettingsManager:
         except (OSError, json.JSONDecodeError):
             loaded = {}
 
-        merged = deepcopy(DEFAULT_SETTINGS)
         if isinstance(loaded, dict):
-            for key, value in loaded.items():
-                if key in merged:
-                    merged[key] = value
+            loaded = self._migrate_settings(loaded)
+        else:
+            loaded = {}
 
-        self._settings = merged
+        merged = deepcopy(DEFAULT_SETTINGS)
+        for key, value in loaded.items():
+            if key in merged:
+                merged[key] = value
+
+        self._settings = self._normalize(merged)
         self.save()
         self.ensure_local_folders()
         return self.all()
@@ -114,6 +126,7 @@ class SettingsManager:
         if key not in DEFAULT_SETTINGS:
             raise KeyError(f"Unknown setting: {key}")
         self._settings[key] = value
+        self._settings = self._normalize(self._settings)
         if save:
             self.save()
             self.ensure_local_folders()
@@ -123,6 +136,7 @@ class SettingsManager:
             if key not in DEFAULT_SETTINGS:
                 raise KeyError(f"Unknown setting: {key}")
             self._settings[key] = value
+        self._settings = self._normalize(self._settings)
         if save:
             self.save()
             self.ensure_local_folders()
@@ -131,3 +145,31 @@ class SettingsManager:
         self._settings = deepcopy(DEFAULT_SETTINGS)
         self.save()
         self.ensure_local_folders()
+
+    def _migrate_settings(self, loaded: dict[str, Any]) -> dict[str, Any]:
+        migrated = dict(loaded)
+        if "auto_download_models" not in migrated and "auto_download_model" in migrated:
+            migrated["auto_download_models"] = bool(migrated.get("auto_download_model"))
+        if "device" not in migrated and "use_gpu" in migrated:
+            migrated["device"] = "gpu" if bool(migrated.get("use_gpu")) else "auto"
+        if "use_gpu_if_available" not in migrated and "use_gpu" in migrated:
+            migrated["use_gpu_if_available"] = bool(migrated.get("use_gpu"))
+        return migrated
+
+    def _normalize(self, values: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(values)
+        if normalized.get("selected_model") not in {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo", "large-v3-turbo"}:
+            normalized["selected_model"] = "base"
+        if normalized.get("device") not in {"auto", "cpu", "gpu"}:
+            normalized["device"] = "auto"
+        if normalized.get("compute_type") not in {"auto", "int8", "int8_float16", "float16", "float32"}:
+            normalized["compute_type"] = "auto"
+        if normalized.get("performance_preset") not in {"fast", "balanced", "accurate", "low_ram", "low_vram"}:
+            normalized["performance_preset"] = "balanced"
+        cpu_threads = normalized.get("cpu_threads", "auto")
+        if cpu_threads != "auto":
+            try:
+                normalized["cpu_threads"] = max(1, min(64, int(cpu_threads)))
+            except (TypeError, ValueError):
+                normalized["cpu_threads"] = "auto"
+        return normalized
