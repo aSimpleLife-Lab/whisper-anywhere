@@ -621,36 +621,40 @@ class MainWindow(QMainWindow):
             return
         preset = str(self.performance_combo.currentData() or "balanced")
         model_hint = None
-        if preset == "fast":
-            model_hint = "base"
-            self._select_combo_data(self.device_combo, "auto")
-            self._select_combo_data(self.compute_combo, "auto")
-            self.low_ram_checkbox.setChecked(False)
-            self.low_vram_checkbox.setChecked(False)
-        elif preset == "balanced":
-            model_hint = "base"
-            self._select_combo_data(self.device_combo, "auto")
-            self._select_combo_data(self.compute_combo, "auto")
-            self.low_ram_checkbox.setChecked(False)
-            self.low_vram_checkbox.setChecked(False)
-        elif preset == "accurate":
-            model_hint = "medium"
-            self._select_combo_data(self.device_combo, "auto")
-            self._select_combo_data(self.compute_combo, "auto")
-            self.low_ram_checkbox.setChecked(False)
-            self.low_vram_checkbox.setChecked(False)
-        elif preset == "low_ram":
-            model_hint = "base"
-            self._select_combo_data(self.device_combo, "cpu")
-            self._select_combo_data(self.compute_combo, "int8")
-            self.low_ram_checkbox.setChecked(True)
-            self.low_vram_checkbox.setChecked(False)
-        elif preset == "low_vram":
-            model_hint = "small"
-            self._select_combo_data(self.device_combo, "auto")
-            self._select_combo_data(self.compute_combo, "int8_float16")
-            self.low_ram_checkbox.setChecked(False)
-            self.low_vram_checkbox.setChecked(True)
+        self._loading_ui = True
+        try:
+            if preset == "fast":
+                model_hint = "base"
+                self._select_combo_data(self.device_combo, "auto")
+                self._select_combo_data(self.compute_combo, "auto")
+                self.low_ram_checkbox.setChecked(False)
+                self.low_vram_checkbox.setChecked(False)
+            elif preset == "balanced":
+                model_hint = "base"
+                self._select_combo_data(self.device_combo, "auto")
+                self._select_combo_data(self.compute_combo, "auto")
+                self.low_ram_checkbox.setChecked(False)
+                self.low_vram_checkbox.setChecked(False)
+            elif preset == "accurate":
+                model_hint = "medium"
+                self._select_combo_data(self.device_combo, "auto")
+                self._select_combo_data(self.compute_combo, "auto")
+                self.low_ram_checkbox.setChecked(False)
+                self.low_vram_checkbox.setChecked(False)
+            elif preset == "low_ram":
+                model_hint = "base"
+                self._select_combo_data(self.device_combo, "cpu")
+                self._select_combo_data(self.compute_combo, "int8")
+                self.low_ram_checkbox.setChecked(True)
+                self.low_vram_checkbox.setChecked(False)
+            elif preset == "low_vram":
+                model_hint = "small"
+                self._select_combo_data(self.device_combo, "auto")
+                self._select_combo_data(self.compute_combo, "int8_float16")
+                self.low_ram_checkbox.setChecked(False)
+                self.low_vram_checkbox.setChecked(True)
+        finally:
+            self._loading_ui = False
 
         self.save_performance_settings(prepare=False)
         if model_hint and model_hint != self.model_manager.selected_model():
