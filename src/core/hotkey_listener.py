@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import threading
-from dataclasses import dataclass
 from ctypes import wintypes
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -29,12 +32,31 @@ VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+LRESULT = getattr(wintypes, "LRESULT", ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long)
+HHOOK = getattr(wintypes, "HHOOK", wintypes.HANDLE)
+HINSTANCE = getattr(wintypes, "HINSTANCE", wintypes.HANDLE)
 
 MODIFIER_VKS = {
     "ctrl": {VK_CONTROL, VK_LCONTROL, VK_RCONTROL},
     "shift": {VK_SHIFT, VK_LSHIFT, VK_RSHIFT},
     "alt": {VK_MENU, VK_LMENU, VK_RMENU},
     "win": {VK_LWIN, VK_RWIN},
+}
+
+VK_DISPLAY_NAMES = {
+    VK_ESCAPE: "Esc",
+    VK_CONTROL: "Ctrl",
+    VK_LCONTROL: "Left Ctrl",
+    VK_RCONTROL: "Right Ctrl",
+    VK_SHIFT: "Shift",
+    VK_LSHIFT: "Left Shift",
+    VK_RSHIFT: "Right Shift",
+    VK_MENU: "Alt",
+    VK_LMENU: "Left Alt",
+    VK_RMENU: "Right Alt",
+    VK_LWIN: "Left Win",
+    VK_RWIN: "Right Win",
+    0x20: "Space",
 }
 
 KEY_NAME_TO_VK = {
@@ -81,9 +103,28 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-LowLevelKeyboardProc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+LowLevelKeyboardProc = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+user32.SetWindowsHookExW.argtypes = (ctypes.c_int, LowLevelKeyboardProc, HINSTANCE, wintypes.DWORD)
+user32.SetWindowsHookExW.restype = HHOOK
+user32.CallNextHookEx.argtypes = (HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+user32.CallNextHookEx.restype = LRESULT
+user32.UnhookWindowsHookEx.argtypes = (HHOOK,)
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+user32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
+user32.GetMessageW.restype = wintypes.BOOL
+user32.TranslateMessage.argtypes = (ctypes.POINTER(wintypes.MSG),)
+user32.TranslateMessage.restype = wintypes.BOOL
+user32.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
+user32.DispatchMessageW.restype = LRESULT
+user32.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+user32.PostThreadMessageW.restype = wintypes.BOOL
+kernel32.GetCurrentThreadId.argtypes = ()
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+kernel32.GetModuleHandleW.restype = HINSTANCE
 
 
 @dataclass(frozen=True)
@@ -161,8 +202,15 @@ def shortcut_warning(shortcut_text: str) -> str:
     if display in common:
         return common[display]
     if display == "ctrl+win":
-        return "Default V1 shortcut. Press Ctrl first, then Win, to avoid opening Start."
+        return "Modifier-only Ctrl+Win can be unreliable on Windows. Ctrl+Win+Space is recommended."
     return ""
+
+
+def _default_hotkey_log_path() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "Whisper Anywhere" / "hotkey.log"
+    return Path.home() / "AppData" / "Roaming" / "Whisper Anywhere" / "hotkey.log"
 
 
 class HotkeyListener(QObject):
@@ -170,11 +218,19 @@ class HotkeyListener(QObject):
     released = Signal()
     cancelled = Signal()
     error = Signal(str)
+    status = Signal(str)
 
-    def __init__(self, shortcut: str = "Ctrl+Win", mode: str = "hold", parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        shortcut: str = "Ctrl+Win+Space",
+        mode: str = "hold",
+        log_path: str | Path | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.shortcut = parse_shortcut(shortcut)
         self.mode = mode if mode in ("hold", "toggle") else "hold"
+        self.log_path = Path(log_path) if log_path else _default_hotkey_log_path()
         self._pressed_vks: set[int] = set()
         self._shortcut_active = False
         self._toggle_listening = False
@@ -183,16 +239,22 @@ class HotkeyListener(QObject):
         self._thread_id = 0
         self._hook_handle = None
         self._suppress_win_until_up = False
+        self._log_lock = threading.Lock()
+        self._log_failed = False
         self._callback = LowLevelKeyboardProc(self._keyboard_proc)
 
     def start(self) -> None:
         if self._running:
             return
+        self._log(f"Starting hotkey listener: shortcut={self.shortcut.display}, mode={self.mode}")
+        self.status.emit(f"Starting global shortcut listener. Log: {self.log_path}")
         self._running = True
         self._thread = threading.Thread(target=self._run_message_loop, name="WhisperAnywhereHotkey", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        self._log("Stopping hotkey listener")
+        self.status.emit("Stopping global shortcut listener.")
         self._running = False
         if self._thread_id:
             user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
@@ -207,14 +269,25 @@ class HotkeyListener(QObject):
         self._shortcut_active = False
         self._toggle_listening = False
         self._suppress_win_until_up = False
+        self._log(f"Updated hotkey: shortcut={self.shortcut.display}, mode={self.mode}")
+        self.status.emit(f"Shortcut active: {self.shortcut.display} ({self.mode}).")
 
     def _run_message_loop(self) -> None:
         self._thread_id = kernel32.GetCurrentThreadId()
+        self._log(f"Installing WH_KEYBOARD_LL hook on thread={self._thread_id}")
         self._hook_handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, kernel32.GetModuleHandleW(None), 0)
         if not self._hook_handle:
-            self.error.emit("Could not register the global keyboard hook. Restart the app or check security software settings.")
+            message = (
+                "Could not register the global keyboard hook. "
+                f"{self._last_error_message()} Restart the app or check security software settings."
+            )
+            self._log(f"Hook install failed: {message}")
+            self.error.emit(message)
+            self.status.emit(message)
             self._running = False
             return
+        self._log(f"Keyboard hook installed: handle={int(self._hook_handle)}")
+        self.status.emit(f"Global shortcut ready: {self.shortcut.display}.")
 
         msg = wintypes.MSG()
         while self._running and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
@@ -223,8 +296,10 @@ class HotkeyListener(QObject):
 
         if self._hook_handle:
             user32.UnhookWindowsHookEx(self._hook_handle)
+            self._log("Keyboard hook uninstalled")
             self._hook_handle = None
         self._thread_id = 0
+        self.status.emit("Global shortcut listener stopped.")
 
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code != HC_ACTION:
@@ -236,6 +311,7 @@ class HotkeyListener(QObject):
         is_up = w_param in (WM_KEYUP, WM_SYSKEYUP)
 
         if is_down and vk_code == VK_ESCAPE:
+            self._log("Cancel key pressed: Esc")
             self.cancelled.emit()
             self._toggle_listening = False
             return user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
@@ -248,18 +324,27 @@ class HotkeyListener(QObject):
 
         is_active = self._is_shortcut_pressed()
         self._shortcut_active = is_active
+        self._log_key_transition(vk_code, is_down, is_up, was_active, is_active, int(event.flags))
 
         if self.mode == "hold":
             if is_active and not was_active:
+                self._log("Hold shortcut pressed")
+                self.status.emit(f"Shortcut pressed: {self.shortcut.display}.")
                 self.pressed.emit()
             elif was_active and not is_active:
+                self._log("Hold shortcut released")
+                self.status.emit(f"Shortcut released: {self.shortcut.display}.")
                 self.released.emit()
         else:
             if is_active and not was_active:
                 self._toggle_listening = not self._toggle_listening
                 if self._toggle_listening:
+                    self._log("Toggle shortcut started listening")
+                    self.status.emit(f"Shortcut toggled on: {self.shortcut.display}.")
                     self.pressed.emit()
                 else:
+                    self._log("Toggle shortcut stopped listening")
+                    self.status.emit(f"Shortcut toggled off: {self.shortcut.display}.")
                     self.released.emit()
 
         if self._should_suppress_event(vk_code, is_down, is_up, was_active, is_active):
@@ -288,3 +373,46 @@ class HotkeyListener(QObject):
             self._suppress_win_until_up = False
             return True
         return was_active or is_active
+
+    def _log_key_transition(self, vk_code: int, is_down: bool, is_up: bool, was_active: bool, is_active: bool, flags: int) -> None:
+        if not (is_down or is_up):
+            return
+        if vk_code != VK_ESCAPE and vk_code not in self.shortcut.involved_vks():
+            return
+        action = "down" if is_down else "up"
+        self._log(
+            f"key {action}: {self._vk_name(vk_code)} vk={vk_code} flags=0x{flags:08x} "
+            f"pressed=[{self._pressed_keys_text()}] active={is_active} was_active={was_active}"
+        )
+
+    def _pressed_keys_text(self) -> str:
+        names = [self._vk_name(vk_code) for vk_code in sorted(self._pressed_vks)]
+        return ", ".join(names)
+
+    def _vk_name(self, vk_code: int) -> str:
+        if vk_code in VK_DISPLAY_NAMES:
+            return VK_DISPLAY_NAMES[vk_code]
+        if 0x30 <= vk_code <= 0x39 or 0x41 <= vk_code <= 0x5A:
+            return chr(vk_code)
+        return f"VK_{vk_code}"
+
+    def _last_error_message(self) -> str:
+        error_code = ctypes.get_last_error()
+        if not error_code:
+            return "Windows did not provide an error code."
+        try:
+            return str(ctypes.WinError(error_code))
+        except Exception:
+            return f"Windows error {error_code}."
+
+    def _log(self, message: str) -> None:
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            with self._log_lock:
+                with self.log_path.open("a", encoding="utf-8") as file:
+                    file.write(f"{timestamp} {message}\n")
+        except OSError as exc:
+            if not self._log_failed:
+                self._log_failed = True
+                self.status.emit(f"Hotkey logging is unavailable: {exc}")

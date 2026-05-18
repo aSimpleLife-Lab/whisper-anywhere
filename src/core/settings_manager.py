@@ -30,8 +30,9 @@ def default_model_path() -> str:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "selected_model": "base",
     "microphone_device": "default",
-    "shortcut": "Ctrl+Win",
+    "shortcut": "Ctrl+Win+Space",
     "shortcut_mode": "hold",
+    "hotkey_default_version": 2,
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
@@ -75,6 +76,14 @@ class SettingsManager:
     @property
     def settings_path_text(self) -> str:
         return str(self.settings_path)
+
+    @property
+    def hotkey_log_path(self) -> Path:
+        return self.config_dir / "hotkey.log"
+
+    @property
+    def hotkey_log_path_text(self) -> str:
+        return str(self.hotkey_log_path)
 
     def ensure_local_folders(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -148,6 +157,9 @@ class SettingsManager:
 
     def _migrate_settings(self, loaded: dict[str, Any]) -> dict[str, Any]:
         migrated = dict(loaded)
+        if migrated.get("hotkey_default_version") is None and str(migrated.get("shortcut", "")).lower().replace(" ", "") == "ctrl+win":
+            migrated["shortcut"] = "Ctrl+Win+Space"
+            migrated["hotkey_default_version"] = 2
         if "auto_download_models" not in migrated and "auto_download_model" in migrated:
             migrated["auto_download_models"] = bool(migrated.get("auto_download_model"))
         if "device" not in migrated and "use_gpu" in migrated:

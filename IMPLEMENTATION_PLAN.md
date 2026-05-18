@@ -28,6 +28,7 @@ whisper-app/
   requirements.txt
   scripts/
     build_exe.ps1
+    test_hotkeys.ps1
   src/
     main.py
     core/
@@ -73,7 +74,10 @@ Hotkey listener:
 
 - Runs a Win32 low-level keyboard hook on a dedicated thread.
 - Supports hold-to-talk, toggle mode, and Esc cancel.
-- Suppresses the Win key during the default Ctrl+Win shortcut to avoid opening Start where possible.
+- Uses `Ctrl+Win+Space` as the default because it includes a non-modifier trigger key.
+- Keeps legacy `Ctrl+Win` available for comparison, but treats modifier-only shortcuts as less reliable on Windows.
+- Writes hook install, hook shutdown, shortcut updates, and shortcut key transitions to `%APPDATA%\Whisper Anywhere\hotkey.log`.
+- Surfaces current hotkey status and hook errors in the UI.
 
 Audio recorder:
 
@@ -144,8 +148,9 @@ Advanced:
 {
   "selected_model": "base",
   "microphone_device": "default",
-  "shortcut": "Ctrl+Win",
+  "shortcut": "Ctrl+Win+Space",
   "shortcut_mode": "hold",
+  "hotkey_default_version": 2,
   "cancel_shortcut": "Esc",
   "insert_method": "clipboard_paste",
   "restore_clipboard": true,
@@ -181,7 +186,7 @@ Advanced:
 
 Included now:
 
-- Global Ctrl+Win hold-to-talk
+- Global Ctrl+Win+Space hold-to-talk
 - Toggle mode option
 - Change shortcut UI with conflict warnings
 - Microphone selection and level meter
@@ -193,6 +198,7 @@ Included now:
 - Settings JSON
 - Automatic local folders and model preparation/download path
 - README, setup, build instructions, troubleshooting
+- Hotkey diagnostic test helper for source and EXE comparisons
 
 Still later:
 
@@ -208,9 +214,10 @@ Still later:
 
 Ctrl+Win as only modifiers:
 
-- It is possible with a low-level keyboard hook, but it is less standard than Ctrl+Win+Space.
-- The Windows key can open Start if not suppressed correctly.
-- The app warns and allows changing the shortcut.
+- It is possible with a low-level keyboard hook, but it is less standard and less reliable than Ctrl+Win+Space.
+- Windows shell behavior can still be sensitive to key order and can open Start before a clean hold/release sequence reaches the app.
+- The Settings UI keeps Ctrl+Win available for testing, but Ctrl+Win+Space is the default and recommended shortcut.
+- Hotkey diagnostics record whether the hook installed and which shortcut key transitions were observed.
 
 Typing into elevated apps:
 

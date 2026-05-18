@@ -73,7 +73,8 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_settings_into_ui()
         self._apply_styles()
-        self.set_status("Ready", "Click anywhere, hold Ctrl + Win, speak, then release.")
+        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
+        self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
         self.prepare_selected_model(auto=True)
 
     def _build_ui(self) -> None:
@@ -118,7 +119,7 @@ class MainWindow(QMainWindow):
         self.bottom_status = QLabel("Ready")
         self.bottom_model = QLabel("Whisper: base")
         self.bottom_mic = QLabel("Mic: Default system microphone")
-        self.bottom_shortcut = QLabel("Shortcut: Ctrl+Win")
+        self.bottom_shortcut = QLabel("Shortcut: Ctrl+Win+Space")
         for label in (self.bottom_status, self.bottom_model, self.bottom_mic, self.bottom_shortcut):
             label.setObjectName("bottomLabel")
         bottom.addWidget(self.bottom_status)
@@ -145,14 +146,14 @@ class MainWindow(QMainWindow):
         text_block = QVBoxLayout()
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusLabel")
-        self.status_detail = QLabel("Hold Ctrl + Win to talk.")
+        self.status_detail = QLabel("Hold Ctrl + Win + Space to talk.")
         self.status_detail.setObjectName("mutedLabel")
         self.level_bar = QProgressBar()
         self.level_bar.setRange(0, 100)
         self.level_bar.setValue(0)
         self.level_bar.setTextVisible(False)
         self.level_bar.setFixedHeight(14)
-        self.shortcut_reminder = QLabel("Hold Ctrl + Win to talk")
+        self.shortcut_reminder = QLabel("Hold Ctrl + Win + Space to talk")
         self.shortcut_reminder.setObjectName("shortcutReminder")
         text_block.addWidget(self.status_label)
         text_block.addWidget(self.status_detail)
@@ -223,7 +224,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("Shortcut"), 2, 0)
         self.shortcut_input = QLineEdit()
-        self.shortcut_input.setPlaceholderText("Ctrl+Win")
+        self.shortcut_input.setPlaceholderText("Ctrl+Win+Space")
         layout.addWidget(self.shortcut_input, 2, 1)
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Hold to talk", "hold")
@@ -236,14 +237,23 @@ class MainWindow(QMainWindow):
         self.shortcut_warning.setObjectName("warningLabel")
         layout.addWidget(self.shortcut_warning, 3, 1, 1, 3)
 
-        layout.addWidget(QLabel("Insert method"), 4, 0)
+        layout.addWidget(QLabel("Hotkey status"), 4, 0)
+        self.hotkey_status_label = QLabel("Starting global shortcut listener.")
+        self.hotkey_status_label.setObjectName("mutedLabel")
+        layout.addWidget(self.hotkey_status_label, 4, 1, 1, 3)
+
+        self.hotkey_log_label = QLabel(f"Hotkey log: {self.settings_manager.hotkey_log_path_text}")
+        self.hotkey_log_label.setObjectName("mutedLabel")
+        layout.addWidget(self.hotkey_log_label, 5, 1, 1, 3)
+
+        layout.addWidget(QLabel("Insert method"), 6, 0)
         self.insert_method_combo = QComboBox()
         self.insert_method_combo.addItem("Clipboard paste", "clipboard_paste")
         self.insert_method_combo.addItem("Simulated keystrokes", "simulated_keystrokes")
-        layout.addWidget(self.insert_method_combo, 4, 1)
+        layout.addWidget(self.insert_method_combo, 6, 1)
 
         self.restore_clipboard_checkbox = QCheckBox("Restore previous clipboard after paste")
-        layout.addWidget(self.restore_clipboard_checkbox, 4, 2, 1, 2)
+        layout.addWidget(self.restore_clipboard_checkbox, 6, 2, 1, 2)
 
         return panel
 
@@ -316,7 +326,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         steps = [
             "1. Place your cursor where you want text.",
-            "2. Hold Ctrl + Win and speak.",
+            "2. Hold Ctrl + Win + Space and speak.",
             "3. Release the shortcut.",
             "4. Whisper Anywhere transcribes locally and types the text there.",
         ]
@@ -370,7 +380,7 @@ class MainWindow(QMainWindow):
         self.refresh_microphones()
         selected = self.model_manager.selected_model()
         self._update_model_buttons(selected)
-        self.shortcut_input.setText(str(self.settings_manager.get("shortcut", "Ctrl+Win")))
+        self.shortcut_input.setText(str(self.settings_manager.get("shortcut", "Ctrl+Win+Space")))
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.mode_combo.setCurrentIndex(0 if mode == "hold" else 1)
         insert_method = str(self.settings_manager.get("insert_method", "clipboard_paste"))
@@ -496,7 +506,8 @@ class MainWindow(QMainWindow):
             self.set_status("Ready", message)
         else:
             self.model_status.setText(f"Model ready: {model_name}")
-            self.set_status("Ready", "Click anywhere, hold Ctrl + Win, speak, then release.")
+            shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
+            self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
 
     def fail_model_prepare(self, message: str) -> None:
         self._is_preparing_model = False
@@ -599,7 +610,7 @@ class MainWindow(QMainWindow):
             pass
 
     def apply_shortcut_settings(self) -> None:
-        shortcut = self.shortcut_input.text().strip() or "Ctrl+Win"
+        shortcut = self.shortcut_input.text().strip() or "Ctrl+Win+Space"
         try:
             parse_shortcut(shortcut)
         except ValueError as exc:
@@ -607,7 +618,7 @@ class MainWindow(QMainWindow):
             return
 
         warning = shortcut_warning(shortcut)
-        if warning and not warning.startswith("Default V1"):
+        if warning:
             QMessageBox.warning(self, "Shortcut warning", warning)
         mode = str(self.mode_combo.currentData() or "hold")
         self.shortcut_changed.emit(shortcut, mode)
@@ -615,6 +626,7 @@ class MainWindow(QMainWindow):
         self.shortcut_reminder.setText(f"{self._mode_label()} {shortcut} to talk")
         self.update_bottom_labels()
         self.set_status("Ready", f"Shortcut saved: {shortcut}")
+        self.set_hotkey_status(f"Shortcut saved: {shortcut}. Watch the hotkey log while testing.")
 
     def apply_performance_preset(self) -> None:
         if self._loading_ui:
@@ -702,7 +714,7 @@ class MainWindow(QMainWindow):
             self.prepare_selected_model(auto=True)
 
     def update_shortcut_warning(self) -> None:
-        warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Win")
+        warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Win+Space")
         self.shortcut_warning.setText(warning)
 
     def update_level(self, level: float) -> None:
@@ -713,10 +725,18 @@ class MainWindow(QMainWindow):
         self.status_detail.setText(detail)
         self.bottom_status.setText(status)
 
+    def set_hotkey_status(self, message: str) -> None:
+        self.hotkey_status_label.setText(message)
+
+    def show_hotkey_error(self, message: str) -> None:
+        self.set_hotkey_status(message)
+        self.set_status("Hotkey Error", message)
+        QMessageBox.warning(self, "Hotkey error", message)
+
     def update_bottom_labels(self) -> None:
         model = self.model_manager.selected_model()
         mic_name = self.mic_combo.currentText() or "Default system microphone"
-        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win"))
+        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
         device = str(self.settings_manager.get("device", "auto"))
         self.bottom_model.setText(f"Whisper: {model} ({device})")
         self.bottom_mic.setText(f"Mic: {mic_name}")

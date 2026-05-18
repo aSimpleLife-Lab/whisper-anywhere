@@ -3,7 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import sys
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from core.audio_recorder import AudioRecorder
 from core.hotkey_listener import HotkeyListener
@@ -32,14 +32,16 @@ def main() -> int:
     window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter)
     tray = TrayManager(model_manager)
     hotkey = HotkeyListener(
-        str(settings_manager.get("shortcut", "Ctrl+Win")),
+        str(settings_manager.get("shortcut", "Ctrl+Win+Space")),
         str(settings_manager.get("shortcut_mode", "hold")),
+        log_path=settings_manager.hotkey_log_path,
     )
 
     hotkey.pressed.connect(window.start_listening)
     hotkey.released.connect(window.stop_listening_and_transcribe)
     hotkey.cancelled.connect(window.cancel_listening)
-    hotkey.error.connect(lambda message: QMessageBox.warning(window, "Hotkey error", message))
+    hotkey.status.connect(window.set_hotkey_status)
+    hotkey.error.connect(window.show_hotkey_error)
     window.shortcut_changed.connect(hotkey.update_shortcut)
 
     tray.start_requested.connect(window.start_listening)
