@@ -43,11 +43,11 @@ class TrayManager(QObject):
         menu = QMenu()
 
         start_action = QAction("Start listening", self)
-        start_action.triggered.connect(self.start_requested.emit)
+        start_action.triggered.connect(lambda checked=False: self.start_requested.emit())
         menu.addAction(start_action)
 
         stop_action = QAction("Stop listening", self)
-        stop_action.triggered.connect(self.stop_requested.emit)
+        stop_action.triggered.connect(lambda checked=False: self.stop_requested.emit())
         menu.addAction(stop_action)
 
         model_menu = menu.addMenu("Current model")
@@ -63,17 +63,17 @@ class TrayManager(QObject):
         menu.addSeparator()
 
         open_action = QAction("Open app", self)
-        open_action.triggered.connect(self.open_requested.emit)
+        open_action.triggered.connect(lambda checked=False: self.open_requested.emit())
         menu.addAction(open_action)
 
         settings_action = QAction("Settings", self)
-        settings_action.triggered.connect(self.settings_requested.emit)
+        settings_action.triggered.connect(lambda checked=False: self.settings_requested.emit())
         menu.addAction(settings_action)
 
         menu.addSeparator()
 
         exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.exit_requested.emit)
+        exit_action.triggered.connect(lambda checked=False: self.exit_requested.emit())
         menu.addAction(exit_action)
 
         self.tray.setContextMenu(menu)
