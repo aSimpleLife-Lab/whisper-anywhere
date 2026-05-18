@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from core.settings_manager import SettingsManager
@@ -61,10 +62,30 @@ class ModelManager:
             raise ValueError(f"Unknown Whisper model: {model_name}")
         self.settings_manager.set("selected_model", model_name)
 
-    def backend_model_name(self) -> str:
-        return self.selected_info().backend_name
+    def backend_model_name(self, model_name: str | None = None) -> str:
+        selected = model_name or self.selected_model()
+        return MODEL_INFO[selected].backend_name
 
     def model_storage_path(self) -> Path:
         path = Path(str(self.settings_manager.get("model_path"))).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def marker_path(self, model_name: str | None = None) -> Path:
+        selected = model_name or self.selected_model()
+        safe_name = selected.replace("/", "_").replace("\\", "_")
+        return self.model_storage_path() / f".{safe_name}.ready.json"
+
+    def is_model_ready(self, model_name: str | None = None) -> bool:
+        marker = self.marker_path(model_name)
+        if marker.exists():
+            return True
+        return any(self.model_storage_path().glob("models--*"))
+
+    def mark_model_ready(self, model_name: str | None = None) -> None:
+        selected = model_name or self.selected_model()
+        info = MODEL_INFO[selected]
+        marker = self.marker_path(selected)
+        with marker.open("w", encoding="utf-8") as file:
+            json.dump({"model": asdict(info)}, file, indent=2)
+            file.write("\n")
