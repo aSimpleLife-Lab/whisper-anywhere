@@ -1,6 +1,7 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Clipboard,
   Download,
@@ -36,6 +37,18 @@ function formatTime(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
+function extensionForMimeType(mimeType: string) {
+  if (mimeType.includes("mp4") || mimeType.includes("m4a")) {
+    return "m4a";
+  }
+
+  if (mimeType.includes("wav")) {
+    return "wav";
+  }
+
+  return "webm";
+}
+
 export default function Home() {
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioName, setAudioName] = useState("recording.webm");
@@ -50,6 +63,7 @@ export default function Home() {
   const [transcript, setTranscript] = useState("");
 
   const chunksRef = useRef<Blob[]>([]);
+  const discardRecordingRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -95,6 +109,7 @@ export default function Home() {
       const recorder = new MediaRecorder(stream, options);
 
       chunksRef.current = [];
+      discardRecordingRef.current = false;
       streamRef.current = stream;
       recorderRef.current = recorder;
 
@@ -105,13 +120,19 @@ export default function Home() {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm"
-        });
-        setAudioBlob(blob);
-        setAudioName(`recording-${Date.now()}.webm`);
+        const mimeType = recorder.mimeType || "audio/webm";
         stream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
+
+        if (discardRecordingRef.current) {
+          chunksRef.current = [];
+          discardRecordingRef.current = false;
+          return;
+        }
+
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        setAudioBlob(blob);
+        setAudioName(`recording-${Date.now()}.${extensionForMimeType(mimeType)}`);
       };
 
       setAudioBlob(null);
@@ -228,8 +249,11 @@ export default function Home() {
   }
 
   function resetWorkspace() {
-    if (isRecording) {
-      stopRecording();
+    const recorder = recorderRef.current;
+
+    if (recorder && recorder.state !== "inactive") {
+      discardRecordingRef.current = true;
+      recorder.stop();
     }
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -238,6 +262,7 @@ export default function Home() {
     setCopied(false);
     setElapsed(0);
     setError("");
+    setIsRecording(false);
     setTranscript("");
   }
 
@@ -287,10 +312,18 @@ export default function Home() {
                 {isRecording ? <Square size={18} /> : <Mic size={18} />}
                 <span>{isRecording ? "Stop" : "Record"}</span>
               </button>
-              <label className="secondary-button upload-button">
+              <label
+                className={`secondary-button upload-button ${isRecording ? "disabled" : ""}`}
+                aria-disabled={isRecording}
+              >
                 <Upload size={18} />
                 <span>Upload</span>
-                <input accept="audio/*,video/mp4" type="file" onChange={handleUpload} />
+                <input
+                  accept="audio/*,video/mp4"
+                  type="file"
+                  onChange={handleUpload}
+                  disabled={isRecording}
+                />
               </label>
               <div className="timer" aria-live="polite">
                 {formatTime(elapsed)}
