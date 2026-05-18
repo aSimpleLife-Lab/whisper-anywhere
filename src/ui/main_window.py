@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -29,11 +28,11 @@ from PySide6.QtWidgets import (
 )
 
 from core.audio_recorder import AudioRecorder, AudioRecorderError
-from core.hotkey_listener import shortcut_warning
+from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
 from core.text_inserter import TextInserter, TextInsertionError
-from core.transcriber import Transcriber, TranscriptionError
+from core.transcriber import Transcriber
 
 
 class MainWindow(QMainWindow):
@@ -86,7 +85,7 @@ class MainWindow(QMainWindow):
         title_block = QVBoxLayout()
         self.title_label = QLabel("Whisper Anywhere")
         self.title_label.setObjectName("titleLabel")
-        subtitle = QLabel("Speech to Text • Type Anywhere")
+        subtitle = QLabel("Speech to Text - Type Anywhere")
         subtitle.setObjectName("subtitleLabel")
         title_block.addWidget(self.title_label)
         title_block.addWidget(subtitle)
@@ -136,7 +135,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(22, 22, 22, 22)
         layout.setSpacing(24)
 
-        self.mic_button = QPushButton("🎙")
+        self.mic_button = QPushButton("MIC")
         self.mic_button.setObjectName("micButton")
         self.mic_button.setFixedSize(118, 118)
         layout.addWidget(self.mic_button)
@@ -182,7 +181,7 @@ class MainWindow(QMainWindow):
         grid.setSpacing(12)
         for index, info in enumerate(self.model_manager.models()):
             button = QPushButton(
-                f"{info.name}\n{info.approximate_size}\n{info.speed} • {info.accuracy}\n{info.recommended_use}"
+                f"{info.name}\n{info.approximate_size}\n{info.speed} - {info.accuracy}\n{info.recommended_use}"
             )
             button.setCheckable(True)
             button.setObjectName("modelCard")
@@ -404,14 +403,14 @@ class MainWindow(QMainWindow):
             return
 
         self._is_listening = True
-        self.mic_button.setText("■")
+        self.mic_button.setText("STOP")
         self.set_status("Listening", "Speak clearly. Release the shortcut to transcribe and type.")
 
     def stop_listening_and_transcribe(self) -> None:
         if not self._is_listening:
             return
         self._is_listening = False
-        self.mic_button.setText("🎙")
+        self.mic_button.setText("MIC")
         self.level_bar.setValue(0)
 
         try:
@@ -429,8 +428,8 @@ class MainWindow(QMainWindow):
         if not self._is_listening:
             return
         self._is_listening = False
-        self.mic_button.setText("🎙")
-        self.audio_recorder.close()
+        self.mic_button.setText("MIC")
+        self.audio_recorder.cancel()
         self.level_bar.setValue(0)
         self.set_status("Ready", "Recording cancelled.")
 
@@ -473,15 +472,17 @@ class MainWindow(QMainWindow):
 
     def apply_shortcut_settings(self) -> None:
         shortcut = self.shortcut_input.text().strip() or "Ctrl+Win"
+        try:
+            parse_shortcut(shortcut)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Shortcut problem", str(exc))
+            return
+
         warning = shortcut_warning(shortcut)
         if warning and not warning.startswith("Default V1"):
             QMessageBox.warning(self, "Shortcut warning", warning)
         mode = str(self.mode_combo.currentData() or "hold")
-        try:
-            self.shortcut_changed.emit(shortcut, mode)
-        except Exception as exc:
-            self.set_status("Error", str(exc))
-            return
+        self.shortcut_changed.emit(shortcut, mode)
         self.settings_manager.update({"shortcut": shortcut, "shortcut_mode": mode})
         self.shortcut_reminder.setText(f"{self._mode_label()} {shortcut} to talk")
         self.update_bottom_labels()
@@ -500,6 +501,8 @@ class MainWindow(QMainWindow):
                 "auto_download_model": self.auto_download_checkbox.isChecked(),
             }
         )
+        if self.auto_download_checkbox.isChecked():
+            self.prepare_selected_model(auto=True)
 
     def update_shortcut_warning(self) -> None:
         warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Win")
@@ -554,7 +557,7 @@ class MainWindow(QMainWindow):
             #accentLabel { color: #a78bfa; font-weight: 800; }
             #warningLabel { color: #fbbf24; }
             #shortcutReminder { color: #d7dded; background: #111827; border: 1px solid #334155; border-radius: 8px; padding: 8px; }
-            #micButton { border: 2px solid #8b5cf6; border-radius: 59px; background: #241447; color: white; font-size: 42px; }
+            #micButton { border: 2px solid #8b5cf6; border-radius: 59px; background: #241447; color: white; font-size: 24px; font-weight: 800; }
             #micButton:hover { background: #31205d; }
             QPushButton { background: #1f2937; border: 1px solid #374151; border-radius: 8px; padding: 9px 12px; color: #f8fafc; }
             QPushButton:hover { border-color: #8b5cf6; }
