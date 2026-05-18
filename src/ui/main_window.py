@@ -282,14 +282,14 @@ class MainWindow(QMainWindow):
         return panel
 
     def _connect_signals(self) -> None:
-        self.mic_button.clicked.connect(self.toggle_manual_listening)
-        self.prepare_model_button.clicked.connect(lambda: self.prepare_selected_model(auto=False))
-        self.apply_shortcut_button.clicked.connect(self.apply_shortcut_settings)
-        self.shortcut_input.textChanged.connect(self.update_shortcut_warning)
-        self.mic_combo.currentIndexChanged.connect(self.save_microphone_setting)
-        self.insert_method_combo.currentIndexChanged.connect(self.save_typing_settings)
-        self.restore_clipboard_checkbox.stateChanged.connect(self.save_typing_settings)
-        self.auto_download_checkbox.stateChanged.connect(self.save_typing_settings)
+        self.mic_button.clicked.connect(lambda checked=False: self.toggle_manual_listening())
+        self.prepare_model_button.clicked.connect(lambda checked=False: self.prepare_selected_model(auto=False))
+        self.apply_shortcut_button.clicked.connect(lambda checked=False: self.apply_shortcut_settings())
+        self.shortcut_input.textChanged.connect(lambda text="": self.update_shortcut_warning())
+        self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
+        self.insert_method_combo.currentIndexChanged.connect(lambda index=0: self.save_typing_settings())
+        self.restore_clipboard_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
+        self.auto_download_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
         self.level_changed.connect(self.update_level)
         self.transcription_done.connect(self.finish_transcription)
         self.transcription_failed.connect(self.fail_transcription)
