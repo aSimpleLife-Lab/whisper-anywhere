@@ -35,6 +35,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
+    "auto_download_model": True,
     "auto_punctuation": False,
     "auto_capitalization": False,
     "add_space_after_text": False,
@@ -67,10 +68,15 @@ class SettingsManager:
     def settings_path_text(self) -> str:
         return str(self.settings_path)
 
+    def ensure_local_folders(self) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        Path(str(self.get("model_path"))).expanduser().mkdir(parents=True, exist_ok=True)
+
     def load(self) -> dict[str, Any]:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         if not self.settings_path.exists():
             self.save()
+            self.ensure_local_folders()
             return self.all()
 
         try:
@@ -87,6 +93,7 @@ class SettingsManager:
 
         self._settings = merged
         self.save()
+        self.ensure_local_folders()
         return self.all()
 
     def save(self) -> None:
@@ -109,6 +116,7 @@ class SettingsManager:
         self._settings[key] = value
         if save:
             self.save()
+            self.ensure_local_folders()
 
     def update(self, values: dict[str, Any], save: bool = True) -> None:
         for key, value in values.items():
@@ -117,7 +125,9 @@ class SettingsManager:
             self._settings[key] = value
         if save:
             self.save()
+            self.ensure_local_folders()
 
     def reset(self) -> None:
         self._settings = deepcopy(DEFAULT_SETTINGS)
         self.save()
+        self.ensure_local_folders()
