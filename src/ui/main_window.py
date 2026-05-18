@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
-from core.model_manager import ModelManager
+from core.model_manager import LARGE_MODELS, ModelManager, WhisperModelInfo
 from core.settings_manager import SettingsManager
 from core.text_inserter import TextInserter, TextInsertionError
 from core.transcriber import Transcriber
@@ -63,11 +63,12 @@ class MainWindow(QMainWindow):
         self._is_listening = False
         self._is_transcribing = False
         self._is_preparing_model = False
+        self._loading_ui = False
 
         self.model_buttons: dict[str, QPushButton] = {}
 
         self.setWindowTitle("Whisper Anywhere")
-        self.setMinimumSize(1060, 720)
+        self.setMinimumSize(1080, 780)
         self._build_ui()
         self._connect_signals()
         self._load_settings_into_ui()
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._build_status_panel())
         content_layout.addWidget(self._build_model_panel())
         content_layout.addWidget(self._build_settings_panel())
+        content_layout.addWidget(self._build_performance_panel())
         content_layout.addWidget(self._build_how_it_works_panel())
         content_layout.addWidget(self._build_output_panel())
         scroll.setWidget(content)
@@ -114,7 +116,7 @@ class MainWindow(QMainWindow):
 
         bottom = QHBoxLayout()
         self.bottom_status = QLabel("Ready")
-        self.bottom_model = QLabel("Whisper: medium")
+        self.bottom_model = QLabel("Whisper: base")
         self.bottom_mic = QLabel("Mic: Default system microphone")
         self.bottom_shortcut = QLabel("Shortcut: Ctrl+Win")
         for label in (self.bottom_status, self.bottom_model, self.bottom_mic, self.bottom_shortcut):
@@ -170,7 +172,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title = QLabel("Whisper Model")
         title.setObjectName("sectionTitle")
-        self.current_model_label = QLabel("Current model: medium")
+        self.current_model_label = QLabel("Current model: base")
         self.current_model_label.setObjectName("accentLabel")
         header.addWidget(title)
         header.addStretch(1)
@@ -180,9 +182,7 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         grid.setSpacing(12)
         for index, info in enumerate(self.model_manager.models()):
-            button = QPushButton(
-                f"{info.name}\n{info.approximate_size}\n{info.speed} - {info.accuracy}\n{info.recommended_use}"
-            )
+            button = QPushButton(self._model_card_text(info))
             button.setCheckable(True)
             button.setObjectName("modelCard")
             button.clicked.connect(lambda checked=False, name=info.name: self.select_model(name))
@@ -213,7 +213,7 @@ class MainWindow(QMainWindow):
         layout.setHorizontalSpacing(16)
         layout.setVerticalSpacing(14)
 
-        title = QLabel("V1 Settings")
+        title = QLabel("Core Settings")
         title.setObjectName("sectionTitle")
         layout.addWidget(title, 0, 0, 1, 4)
 
@@ -245,8 +245,68 @@ class MainWindow(QMainWindow):
         self.restore_clipboard_checkbox = QCheckBox("Restore previous clipboard after paste")
         layout.addWidget(self.restore_clipboard_checkbox, 4, 2, 1, 2)
 
-        self.auto_download_checkbox = QCheckBox("Download missing Whisper model automatically")
-        layout.addWidget(self.auto_download_checkbox, 5, 1, 1, 3)
+        return panel
+
+    def _build_performance_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("panel")
+        layout = QGridLayout(panel)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(14)
+
+        title = QLabel("Performance / Hardware")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title, 0, 0, 1, 4)
+
+        layout.addWidget(QLabel("Performance Mode"), 1, 0)
+        self.performance_combo = QComboBox()
+        self.performance_combo.addItem("Fast", "fast")
+        self.performance_combo.addItem("Balanced", "balanced")
+        self.performance_combo.addItem("Accurate", "accurate")
+        self.performance_combo.addItem("Low RAM Mode", "low_ram")
+        self.performance_combo.addItem("Low VRAM Mode", "low_vram")
+        layout.addWidget(self.performance_combo, 1, 1)
+
+        layout.addWidget(QLabel("Hardware"), 1, 2)
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("Auto", "auto")
+        self.device_combo.addItem("CPU Only", "cpu")
+        self.device_combo.addItem("GPU Preferred", "gpu")
+        layout.addWidget(self.device_combo, 1, 3)
+
+        self.low_ram_checkbox = QCheckBox("Low RAM Mode")
+        self.low_vram_checkbox = QCheckBox("Low VRAM Mode")
+        self.fallback_cpu_checkbox = QCheckBox("Fall back to CPU if GPU fails")
+        layout.addWidget(self.low_ram_checkbox, 2, 1)
+        layout.addWidget(self.low_vram_checkbox, 2, 2)
+        layout.addWidget(self.fallback_cpu_checkbox, 2, 3)
+
+        self.warn_large_checkbox = QCheckBox("Warn before loading large models")
+        self.auto_download_checkbox = QCheckBox("Auto-download missing models")
+        self.use_gpu_checkbox = QCheckBox("Use GPU if available")
+        layout.addWidget(self.warn_large_checkbox, 3, 1)
+        layout.addWidget(self.auto_download_checkbox, 3, 2)
+        layout.addWidget(self.use_gpu_checkbox, 3, 3)
+
+        layout.addWidget(QLabel("Advanced"), 4, 0)
+        self.compute_combo = QComboBox()
+        self.compute_combo.addItem("Auto", "auto")
+        self.compute_combo.addItem("int8", "int8")
+        self.compute_combo.addItem("int8_float16", "int8_float16")
+        self.compute_combo.addItem("float16", "float16")
+        self.compute_combo.addItem("float32", "float32")
+        layout.addWidget(self.compute_combo, 4, 1)
+
+        self.cpu_threads_combo = QComboBox()
+        self.cpu_threads_combo.addItem("CPU threads: Auto", "auto")
+        for value in (1, 2, 4, 6, 8, 12, 16, 24, 32):
+            self.cpu_threads_combo.addItem(f"CPU threads: {value}", value)
+        layout.addWidget(self.cpu_threads_combo, 4, 2)
+
+        self.hardware_note = QLabel("Auto uses GPU when a compatible CUDA setup is available, otherwise CPU.")
+        self.hardware_note.setObjectName("mutedLabel")
+        layout.addWidget(self.hardware_note, 5, 1, 1, 3)
 
         return panel
 
@@ -289,7 +349,16 @@ class MainWindow(QMainWindow):
         self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
         self.insert_method_combo.currentIndexChanged.connect(lambda index=0: self.save_typing_settings())
         self.restore_clipboard_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
-        self.auto_download_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
+        self.performance_combo.currentIndexChanged.connect(lambda index=0: self.apply_performance_preset())
+        self.device_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
+        self.compute_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
+        self.cpu_threads_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
+        self.low_ram_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.low_vram_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.fallback_cpu_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.warn_large_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.auto_download_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.use_gpu_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
         self.level_changed.connect(self.update_level)
         self.transcription_done.connect(self.finish_transcription)
         self.transcription_failed.connect(self.fail_transcription)
@@ -297,6 +366,7 @@ class MainWindow(QMainWindow):
         self.model_failed.connect(self.fail_model_prepare)
 
     def _load_settings_into_ui(self) -> None:
+        self._loading_ui = True
         self.refresh_microphones()
         selected = self.model_manager.selected_model()
         self._update_model_buttons(selected)
@@ -306,7 +376,17 @@ class MainWindow(QMainWindow):
         insert_method = str(self.settings_manager.get("insert_method", "clipboard_paste"))
         self.insert_method_combo.setCurrentIndex(0 if insert_method == "clipboard_paste" else 1)
         self.restore_clipboard_checkbox.setChecked(bool(self.settings_manager.get("restore_clipboard", True)))
-        self.auto_download_checkbox.setChecked(bool(self.settings_manager.get("auto_download_model", True)))
+        self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
+        self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
+        self._select_combo_data(self.compute_combo, self.settings_manager.get("compute_type", "auto"))
+        self._select_combo_data(self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto"))
+        self.low_ram_checkbox.setChecked(bool(self.settings_manager.get("low_ram_mode", False)))
+        self.low_vram_checkbox.setChecked(bool(self.settings_manager.get("low_vram_mode", False)))
+        self.fallback_cpu_checkbox.setChecked(bool(self.settings_manager.get("fallback_to_cpu", True)))
+        self.warn_large_checkbox.setChecked(bool(self.settings_manager.get("warn_before_large_models", True)))
+        self.auto_download_checkbox.setChecked(bool(self.settings_manager.get("auto_download_models", True)))
+        self.use_gpu_checkbox.setChecked(bool(self.settings_manager.get("use_gpu_if_available", True)))
+        self._loading_ui = False
         self.update_shortcut_warning()
         self.update_bottom_labels()
 
@@ -321,27 +401,65 @@ class MainWindow(QMainWindow):
         self.mic_combo.blockSignals(False)
 
     def select_model(self, model_name: str) -> None:
-        self.model_manager.select_model(model_name)
-        self._update_model_buttons(model_name)
+        normalized = self.model_manager.normalize_model_name(model_name)
+        if normalized != self.model_manager.selected_model() and not self._confirm_model_choice(normalized):
+            self._update_model_buttons(self.model_manager.selected_model())
+            return
+        self.model_manager.select_model(normalized)
+        self._update_model_buttons(normalized)
         self.update_bottom_labels()
-        self.model_changed.emit(model_name)
+        self.model_changed.emit(normalized)
         self.prepare_selected_model(auto=True)
 
+    def _confirm_model_choice(self, model_name: str) -> bool:
+        warnings: list[str] = []
+        if self.warn_large_checkbox.isChecked() and model_name in LARGE_MODELS:
+            warnings.append("Large Whisper models need much more RAM or VRAM and can take longer to load.")
+        if self.low_ram_checkbox.isChecked() and model_name in LARGE_MODELS:
+            warnings.append("Low RAM Mode is on, so a smaller model such as base or small is safer.")
+        if self.low_vram_checkbox.isChecked() and model_name in {"large", "large-v2", "large-v3"}:
+            warnings.append("Low VRAM Mode is on, so large-v3 may be slow or fail on smaller GPUs.")
+        if not warnings:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Load larger model?",
+            "\n\n".join(warnings) + "\n\nContinue with this model?",
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _update_model_buttons(self, selected: str) -> None:
-        for name, button in self.model_buttons.items():
-            button.setChecked(name == selected)
+        for info in self.model_manager.models():
+            button = self.model_buttons.get(info.name)
+            if button is None:
+                continue
+            button.setText(self._model_card_text(info))
+            button.setChecked(info.name == selected)
         self.current_model_label.setText(f"Current model: {selected}")
+
+    def _model_card_text(self, info: WhisperModelInfo) -> str:
+        status = self.model_manager.model_status_label(info.name)
+        return (
+            f"{info.name} - {status}\n"
+            f"{info.approximate_size}\n"
+            f"Speed: {info.speed_estimate} | Accuracy: {info.accuracy_estimate}\n"
+            f"Resources: {info.resource_usage_estimate}\n"
+            f"Use: {info.recommended_use}"
+        )
 
     def prepare_selected_model(self, auto: bool) -> None:
         if self._is_preparing_model:
             return
+        selected = self.model_manager.selected_model()
         if self.model_manager.is_model_ready():
-            self.model_status.setText(f"Model ready: {self.model_manager.selected_model()}")
+            self.model_status.setText(f"Model ready: {selected}")
+            self._update_model_buttons(selected)
             return
-        if auto and not bool(self.settings_manager.get("auto_download_model", True)):
-            self.model_status.setText("Selected model is not prepared yet. Click Prepare model now.")
+        if auto and not bool(self.settings_manager.get("auto_download_models", True)):
+            self.model_status.setText("Selected model is not installed yet. Click Prepare model now.")
+            self._update_model_buttons(selected)
             return
-        if not auto and not bool(self.settings_manager.get("auto_download_model", True)):
+        if not auto and not bool(self.settings_manager.get("auto_download_models", True)):
             answer = QMessageBox.question(
                 self,
                 "Download Whisper model?",
@@ -349,11 +467,14 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if self.model_manager.is_large_model() and bool(self.settings_manager.get("warn_before_large_models", True)):
+            if not self._confirm_model_choice(selected):
+                return
 
         self._is_preparing_model = True
         self.model_progress.setVisible(True)
         self.model_progress.setRange(0, 0)
-        self.model_status.setText(f"Preparing {self.model_manager.selected_model()} model. This can take a while the first time.")
+        self.model_status.setText(f"Preparing {selected} model. This can take a while the first time.")
         settings = self.settings_manager.all()
         threading.Thread(target=self._prepare_model_worker, args=(settings,), daemon=True).start()
 
@@ -368,8 +489,14 @@ class MainWindow(QMainWindow):
     def finish_model_prepare(self, model_name: str) -> None:
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
-        self.model_status.setText(f"Model ready: {model_name}")
-        self.set_status("Ready", "Click anywhere, hold Ctrl + Win, speak, then release.")
+        self._update_model_buttons(model_name)
+        message = self.transcriber.runtime_message
+        if message:
+            self.model_status.setText(f"Model ready: {model_name}. {message}")
+            self.set_status("Ready", message)
+        else:
+            self.model_status.setText(f"Model ready: {model_name}")
+            self.set_status("Ready", "Click anywhere, hold Ctrl + Win, speak, then release.")
 
     def fail_model_prepare(self, message: str) -> None:
         self._is_preparing_model = False
@@ -455,7 +582,8 @@ class MainWindow(QMainWindow):
         except TextInsertionError as exc:
             self.set_status("Error", str(exc))
             return
-        self.set_status("Ready", "Done. Click anywhere and use the shortcut again.")
+        detail = self.transcriber.runtime_message or "Done. Click anywhere and use the shortcut again."
+        self.set_status("Ready", detail)
 
     def fail_transcription(self, message: str, audio_path: str) -> None:
         self._is_transcribing = False
@@ -488,20 +616,85 @@ class MainWindow(QMainWindow):
         self.update_bottom_labels()
         self.set_status("Ready", f"Shortcut saved: {shortcut}")
 
+    def apply_performance_preset(self) -> None:
+        if self._loading_ui:
+            return
+        preset = str(self.performance_combo.currentData() or "balanced")
+        model_hint = None
+        if preset == "fast":
+            model_hint = "base"
+            self._select_combo_data(self.device_combo, "auto")
+            self._select_combo_data(self.compute_combo, "auto")
+            self.low_ram_checkbox.setChecked(False)
+            self.low_vram_checkbox.setChecked(False)
+        elif preset == "balanced":
+            model_hint = "base"
+            self._select_combo_data(self.device_combo, "auto")
+            self._select_combo_data(self.compute_combo, "auto")
+            self.low_ram_checkbox.setChecked(False)
+            self.low_vram_checkbox.setChecked(False)
+        elif preset == "accurate":
+            model_hint = "medium"
+            self._select_combo_data(self.device_combo, "auto")
+            self._select_combo_data(self.compute_combo, "auto")
+            self.low_ram_checkbox.setChecked(False)
+            self.low_vram_checkbox.setChecked(False)
+        elif preset == "low_ram":
+            model_hint = "base"
+            self._select_combo_data(self.device_combo, "cpu")
+            self._select_combo_data(self.compute_combo, "int8")
+            self.low_ram_checkbox.setChecked(True)
+            self.low_vram_checkbox.setChecked(False)
+        elif preset == "low_vram":
+            model_hint = "small"
+            self._select_combo_data(self.device_combo, "auto")
+            self._select_combo_data(self.compute_combo, "int8_float16")
+            self.low_ram_checkbox.setChecked(False)
+            self.low_vram_checkbox.setChecked(True)
+
+        self.save_performance_settings(prepare=False)
+        if model_hint and model_hint != self.model_manager.selected_model():
+            self.select_model(model_hint)
+        else:
+            self.prepare_selected_model(auto=True)
+        self.set_status("Ready", f"Performance mode saved: {self.performance_combo.currentText()}")
+
     def save_microphone_setting(self) -> None:
+        if self._loading_ui:
+            return
         value = self.mic_combo.currentData() or "default"
         self.settings_manager.set("microphone_device", str(value))
         self.update_bottom_labels()
 
     def save_typing_settings(self) -> None:
+        if self._loading_ui:
+            return
         self.settings_manager.update(
             {
                 "insert_method": str(self.insert_method_combo.currentData() or "clipboard_paste"),
                 "restore_clipboard": self.restore_clipboard_checkbox.isChecked(),
-                "auto_download_model": self.auto_download_checkbox.isChecked(),
             }
         )
-        if self.auto_download_checkbox.isChecked():
+
+    def save_performance_settings(self, prepare: bool = True) -> None:
+        if self._loading_ui:
+            return
+        self.settings_manager.update(
+            {
+                "performance_preset": str(self.performance_combo.currentData() or "balanced"),
+                "device": str(self.device_combo.currentData() or "auto"),
+                "compute_type": str(self.compute_combo.currentData() or "auto"),
+                "cpu_threads": self.cpu_threads_combo.currentData() or "auto",
+                "low_ram_mode": self.low_ram_checkbox.isChecked(),
+                "low_vram_mode": self.low_vram_checkbox.isChecked(),
+                "fallback_to_cpu": self.fallback_cpu_checkbox.isChecked(),
+                "warn_before_large_models": self.warn_large_checkbox.isChecked(),
+                "auto_download_models": self.auto_download_checkbox.isChecked(),
+                "use_gpu_if_available": self.use_gpu_checkbox.isChecked(),
+            }
+        )
+        self.update_bottom_labels()
+        if prepare and self.auto_download_checkbox.isChecked():
             self.prepare_selected_model(auto=True)
 
     def update_shortcut_warning(self) -> None:
@@ -520,13 +713,20 @@ class MainWindow(QMainWindow):
         model = self.model_manager.selected_model()
         mic_name = self.mic_combo.currentText() or "Default system microphone"
         shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win"))
-        self.bottom_model.setText(f"Whisper: {model}")
+        device = str(self.settings_manager.get("device", "auto"))
+        self.bottom_model.setText(f"Whisper: {model} ({device})")
         self.bottom_mic.setText(f"Mic: {mic_name}")
         self.bottom_shortcut.setText(f"Shortcut: {shortcut}")
         self.shortcut_reminder.setText(f"{self._mode_label()} {shortcut} to talk")
 
     def _mode_label(self) -> str:
         return "Press" if str(self.settings_manager.get("shortcut_mode", "hold")) == "toggle" else "Hold"
+
+    def _select_combo_data(self, combo: QComboBox, value: Any) -> None:
+        was_blocked = combo.blockSignals(True)
+        index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(was_blocked)
 
     def open_from_tray(self) -> None:
         self.showNormal()
@@ -562,7 +762,7 @@ class MainWindow(QMainWindow):
             QPushButton { background: #1f2937; border: 1px solid #374151; border-radius: 8px; padding: 9px 12px; color: #f8fafc; }
             QPushButton:hover { border-color: #8b5cf6; }
             QPushButton:checked, #modelCard:checked { background: #2e235f; border: 1px solid #8b5cf6; color: white; }
-            #modelCard { min-height: 116px; text-align: left; font-weight: 700; }
+            #modelCard { min-height: 148px; text-align: left; font-weight: 700; }
             QLineEdit, QComboBox, QTextEdit { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 8px; color: #f8fafc; }
             QProgressBar { background: #111827; border: 1px solid #334155; border-radius: 7px; }
             QProgressBar::chunk { background: #8b5cf6; border-radius: 7px; }
