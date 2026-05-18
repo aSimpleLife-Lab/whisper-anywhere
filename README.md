@@ -16,6 +16,8 @@ This is not a web app and it does not use a cloud API in V1.
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
 - Whisper model selector: `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3`, `turbo`
+- Model cards with Installed/Download status, speed, accuracy, resource estimate, and recommended use
+- Performance / Hardware controls for Auto, CPU Only, GPU Preferred, compute precision, presets, fallback, RAM/VRAM modes, and CPU threads
 - Local transcription with `faster-whisper`
 - Clipboard paste insertion into the focused Windows app
 - Restore previous plain-text clipboard after paste
@@ -36,6 +38,29 @@ After the app is built into an EXE, the user should not need to install Python, 
 7. Speak.
 8. Release `Ctrl + Win`.
 9. Text appears where the cursor was.
+
+## Performance / Hardware
+
+Beginner-friendly modes:
+
+- `Fast`: favors the `base` model and quick automatic settings.
+- `Balanced`: default mode, also starts with `base` for reliable V1 performance.
+- `Accurate`: favors `medium` for better quality.
+- `Low RAM Mode`: favors CPU + `int8` and warns before large models.
+- `Low VRAM Mode`: favors smaller models and `int8_float16` for GPUs with less memory.
+
+Hardware choices:
+
+- `Auto`: uses a compatible CUDA GPU if available, otherwise CPU.
+- `CPU Only`: forces local CPU transcription.
+- `GPU Preferred`: tries CUDA first, then falls back to CPU when fallback is enabled.
+
+Advanced choices:
+
+- Compute precision: `Auto`, `int8`, `int8_float16`, `float16`, `float32`
+- CPU threads: `Auto` or a manual thread count
+
+If GPU loading fails and CPU fallback is enabled, Whisper Anywhere shows a friendly message and continues on CPU.
 
 ## Developer Setup From Source
 
@@ -118,6 +143,24 @@ Temporary recordings:
 
 Temporary recordings are deleted after transcription by default.
 
+## Settings Defaults
+
+```json
+{
+  "selected_model": "base",
+  "device": "auto",
+  "compute_type": "auto",
+  "performance_preset": "balanced",
+  "use_gpu_if_available": true,
+  "fallback_to_cpu": true,
+  "low_ram_mode": false,
+  "low_vram_mode": false,
+  "warn_before_large_models": true,
+  "cpu_threads": "auto",
+  "auto_download_models": true
+}
+```
+
 ## V1 Limitations
 
 - No history page yet.
@@ -127,7 +170,7 @@ Temporary recordings are deleted after transcription by default.
 - Clipboard restore preserves previous plain text only in V1, not rich clipboard formats like images or Word formatting.
 - Typing into elevated Administrator apps may require running Whisper Anywhere as Administrator too.
 - The first model setup can take time and needs internet access.
-- GPU mode exists in settings storage but V1 defaults to CPU for reliability.
+- GPU mode needs a compatible CUDA setup; otherwise Auto/GPU Preferred can fall back to CPU.
 
 ## Troubleshooting
 
@@ -142,6 +185,10 @@ Restart the app. If it still fails, change the shortcut in the app. Some securit
 ### Text does not appear in the target app
 
 Try the default clipboard paste mode. If the target app is running as Administrator, run Whisper Anywhere as Administrator too.
+
+### GPU does not work
+
+Use `Auto` or `CPU Only`, or keep `Fall back to CPU if GPU fails` enabled. GPU transcription requires compatible CUDA libraries for faster-whisper/ctranslate2.
 
 ### Model download fails
 
