@@ -166,7 +166,7 @@ h2 {
 
 .icon-button:not(:disabled):hover,
 .primary-button:not(:disabled):hover,
-.secondary-button:hover,
+.secondary-button:not(.disabled):hover,
 .transcribe-button:not(:disabled):hover {
   transform: translateY(-1px);
 }
@@ -242,8 +242,13 @@ h2 {
   color: var(--ink);
 }
 
-.secondary-button:hover {
+.secondary-button:not(.disabled):hover {
   border-color: rgba(15, 118, 110, 0.5);
+}
+
+.upload-button.disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .upload-button input {
