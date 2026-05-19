@@ -1,3 +1,5 @@
+![Whisper Anywhere banner](assets/banner.png)
+
 # Whisper Anywhere
 
 Whisper Anywhere is a native Windows 11 desktop app for local Whisper voice typing.
