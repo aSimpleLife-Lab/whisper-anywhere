@@ -309,6 +309,6 @@ Check internet access, available disk space, and permissions for `%LOCALAPPDATA%
 
 <table>
 <tr>
-<td><strong>I used AI coding tools as part of the workflow, but I’m maintaining, testing, and releasing the project myself.</strong></td>
+<td><h3><strong>I used AI coding tools as part of the workflow, but I’m maintaining, testing, and releasing the project myself.</strong></h3></td>
 </tr>
 </table>
