@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import threading
 import winsound
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +22,14 @@ except Exception:  # pragma: no cover - dependency missing at runtime
     pynput_keyboard = None
 
 WATCHDOG_SECONDS = 60.0
+DEFAULT_START_SOUND_PATH = r"C:\Users\Ben\Downloads\startsound.mp3"
+DEFAULT_STOP_SOUND_PATH = r"C:\Users\Ben\Downloads\stopsound.mp3"
+
+winmm = ctypes.WinDLL("winmm", use_last_error=True)
+winmm.mciSendStringW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.UINT, wintypes.HANDLE)
+winmm.mciSendStringW.restype = wintypes.DWORD
+winmm.mciGetErrorStringW.argtypes = (wintypes.DWORD, wintypes.LPWSTR, wintypes.UINT)
+winmm.mciGetErrorStringW.restype = wintypes.BOOL
 
 KEY_NAME_TO_VK = {
     "space": 0x20,
@@ -232,12 +242,16 @@ class HotkeyListener(QObject):
         shortcut: str = "Ctrl+Alt+Q",
         mode: str = "hold",
         log_path: str | Path | None = None,
+        start_sound_path: str | Path | None = DEFAULT_START_SOUND_PATH,
+        stop_sound_path: str | Path | None = DEFAULT_STOP_SOUND_PATH,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.shortcut = parse_shortcut(shortcut)
         self.mode = mode if mode in ("hold", "toggle") else "hold"
         self.log_path = Path(log_path) if log_path else _default_hotkey_log_path()
+        self.start_sound_path = Path(start_sound_path) if start_sound_path else None
+        self.stop_sound_path = Path(stop_sound_path) if stop_sound_path else None
         self._required_tokens = self._required_tokens_for(self.shortcut)
         self._pressed_tokens: set[str] = set()
         self._shortcut_active = False
@@ -465,6 +479,15 @@ class HotkeyListener(QObject):
         threading.Thread(target=self._play_feedback_worker, args=(active,), name="WhisperAnywhereFeedback", daemon=True).start()
 
     def _play_feedback_worker(self, active: bool) -> None:
+        sound_path = self.start_sound_path if active else self.stop_sound_path
+        if sound_path and sound_path.exists():
+            try:
+                self._play_sound_file(sound_path)
+                self._log(f"Feedback sound file played: {'start' if active else 'stop'} path={sound_path}")
+                return
+            except RuntimeError as exc:
+                self._log(f"Feedback sound file failed: {exc}")
+
         try:
             alias = "SystemAsterisk" if active else "SystemExclamation"
             winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC)
@@ -477,6 +500,25 @@ class HotkeyListener(QObject):
             self._log(f"Feedback message beep requested: {'start' if active else 'stop'}")
         except RuntimeError as exc:
             self._log(f"Feedback sound failed: {exc}")
+
+    def _play_sound_file(self, sound_path: Path) -> None:
+        alias = f"whisper_feedback_{threading.get_ident()}_{id(sound_path)}"
+        path_text = str(sound_path)
+        open_result = winmm.mciSendStringW(f'open "{path_text}" type mpegvideo alias {alias}', None, 0, None)
+        if open_result:
+            raise RuntimeError(self._mci_error(open_result))
+        try:
+            play_result = winmm.mciSendStringW(f"play {alias} wait", None, 0, None)
+            if play_result:
+                raise RuntimeError(self._mci_error(play_result))
+        finally:
+            winmm.mciSendStringW(f"close {alias}", None, 0, None)
+
+    def _mci_error(self, error_code: int) -> str:
+        buffer = ctypes.create_unicode_buffer(256)
+        if winmm.mciGetErrorStringW(error_code, buffer, len(buffer)):
+            return buffer.value
+        return f"MCI error {error_code}"
 
     def _log(self, message: str) -> None:
         try:

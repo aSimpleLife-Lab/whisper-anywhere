@@ -36,6 +36,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
+    "start_sound_path": r"C:\Users\Ben\Downloads\startsound.mp3",
+    "stop_sound_path": r"C:\Users\Ben\Downloads\stopsound.mp3",
     "device": "cpu",
     "compute_type": "int8",
     "performance_preset": "balanced",

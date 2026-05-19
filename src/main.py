@@ -35,6 +35,8 @@ def main() -> int:
         str(settings_manager.get("shortcut", "Ctrl+Alt+Q")),
         str(settings_manager.get("shortcut_mode", "hold")),
         log_path=settings_manager.hotkey_log_path,
+        start_sound_path=str(settings_manager.get("start_sound_path", r"C:\Users\Ben\Downloads\startsound.mp3")),
+        stop_sound_path=str(settings_manager.get("stop_sound_path", r"C:\Users\Ben\Downloads\stopsound.mp3")),
     )
 
     hotkey.pressed.connect(window.start_listening)

@@ -177,6 +177,8 @@ Temporary recordings are deleted after transcription by default.
   "shortcut": "Ctrl+Alt+Q",
   "shortcut_mode": "hold",
   "hotkey_default_version": 3,
+  "start_sound_path": "C:\\Users\\Ben\\Downloads\\startsound.mp3",
+  "stop_sound_path": "C:\\Users\\Ben\\Downloads\\stopsound.mp3",
   "device": "cpu",
   "compute_type": "int8",
   "performance_preset": "balanced",
