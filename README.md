@@ -2,7 +2,7 @@
 
 # Whisper Anywhere
 
-Whisper Anywhere is an early V1 native Windows 11 desktop/tray app for local voice typing. It uses `faster-whisper` to transcribe speech on your PC, then pastes the result into the app you were using.
+Whisper Anywhere is an early V1 native Windows 11 desktop/tray app for local voice typing. It uses `whisper` to transcribe speech on your PC, then pastes the result into the app you were using.
 
 Click in any app, hold `Ctrl + Alt + Q`, speak, release, and Whisper Anywhere transcribes your speech locally with the selected Whisper model.
 
