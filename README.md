@@ -21,6 +21,7 @@ After downloading:
 3. Run `Whisper Anywhere.exe`.
 
 The app downloads Whisper models on first use, so the first launch/model setup can take a little while.
+To launch automatically after reboot, open the app and enable **Start with Windows hidden in the tray** in Core Settings.
 
 ## V1 Features
 
@@ -37,6 +38,8 @@ The app downloads Whisper models on first use, so the first launch/model setup c
 - Local transcription with `faster-whisper`
 - Clipboard paste insertion into the focused Windows app
 - Restore previous plain-text clipboard after paste
+- Optional Windows startup launch hidden in the tray
+- Safer dropdowns that do not change settings while you are just scrolling the page
 - Automatic local folder creation
 - Automatic selected-model preparation/download when enabled
 - Clean shutdown of tray, keyboard hook, and microphone resources

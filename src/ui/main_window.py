@@ -31,10 +31,19 @@ from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import LARGE_MODELS, ModelManager, WhisperModelInfo
 from core.settings_manager import SettingsManager
+from core.startup_manager import StartupManager, StartupManagerError
 from core.text_inserter import TextInserter, TextInsertionError, TextTarget
 from core.transcriber import Transcriber
 
 TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
+
+
+class SafeComboBox(QComboBox):
+    def wheelEvent(self, event) -> None:
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +63,7 @@ class MainWindow(QMainWindow):
         audio_recorder: AudioRecorder,
         transcriber: Transcriber,
         text_inserter: TextInserter,
+        startup_manager: StartupManager,
     ) -> None:
         super().__init__()
         self.settings_manager = settings_manager
@@ -61,6 +71,7 @@ class MainWindow(QMainWindow):
         self.audio_recorder = audio_recorder
         self.transcriber = transcriber
         self.text_inserter = text_inserter
+        self.startup_manager = startup_manager
         self._force_exit = False
         self._target_hwnd: TextTarget | None = None
         self._is_listening = False
@@ -225,14 +236,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(title, 0, 0, 1, 4)
 
         layout.addWidget(QLabel("Microphone"), 1, 0)
-        self.mic_combo = QComboBox()
+        self.mic_combo = SafeComboBox()
         layout.addWidget(self.mic_combo, 1, 1, 1, 3)
 
         layout.addWidget(QLabel("Shortcut"), 2, 0)
         self.shortcut_input = QLineEdit()
         self.shortcut_input.setPlaceholderText("Ctrl+Alt+Q")
         layout.addWidget(self.shortcut_input, 2, 1)
-        self.mode_combo = QComboBox()
+        self.mode_combo = SafeComboBox()
         self.mode_combo.addItem("Hold to talk", "hold")
         self.mode_combo.addItem("Toggle", "toggle")
         layout.addWidget(self.mode_combo, 2, 2)
@@ -253,12 +264,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.hotkey_log_label, 5, 1, 1, 3)
 
         layout.addWidget(QLabel("Insert method"), 6, 0)
-        self.insert_method_combo = QComboBox()
+        self.insert_method_combo = SafeComboBox()
         self.insert_method_combo.addItem("Clipboard paste", "clipboard_paste")
         layout.addWidget(self.insert_method_combo, 6, 1)
 
         self.restore_clipboard_checkbox = QCheckBox("Restore previous clipboard after paste")
         layout.addWidget(self.restore_clipboard_checkbox, 6, 2, 1, 2)
+
+        self.start_with_windows_checkbox = QCheckBox("Start with Windows hidden in the tray")
+        layout.addWidget(self.start_with_windows_checkbox, 7, 1, 1, 3)
 
         return panel
 
@@ -275,7 +289,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title, 0, 0, 1, 4)
 
         layout.addWidget(QLabel("Performance Mode"), 1, 0)
-        self.performance_combo = QComboBox()
+        self.performance_combo = SafeComboBox()
         self.performance_combo.addItem("Fast", "fast")
         self.performance_combo.addItem("Balanced", "balanced")
         self.performance_combo.addItem("Accurate", "accurate")
@@ -284,7 +298,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.performance_combo, 1, 1)
 
         layout.addWidget(QLabel("Hardware"), 1, 2)
-        self.device_combo = QComboBox()
+        self.device_combo = SafeComboBox()
         self.device_combo.addItem("Auto", "auto")
         self.device_combo.addItem("CPU Only", "cpu")
         self.device_combo.addItem("GPU Preferred", "gpu")
@@ -305,7 +319,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.use_gpu_checkbox, 3, 3)
 
         layout.addWidget(QLabel("Advanced"), 4, 0)
-        self.compute_combo = QComboBox()
+        self.compute_combo = SafeComboBox()
         self.compute_combo.addItem("Auto", "auto")
         self.compute_combo.addItem("int8", "int8")
         self.compute_combo.addItem("int8_float16", "int8_float16")
@@ -313,7 +327,7 @@ class MainWindow(QMainWindow):
         self.compute_combo.addItem("float32", "float32")
         layout.addWidget(self.compute_combo, 4, 1)
 
-        self.cpu_threads_combo = QComboBox()
+        self.cpu_threads_combo = SafeComboBox()
         self.cpu_threads_combo.addItem("CPU threads: Auto", "auto")
         for value in (1, 2, 4, 6, 8, 12, 16, 24, 32):
             self.cpu_threads_combo.addItem(f"CPU threads: {value}", value)
@@ -364,6 +378,7 @@ class MainWindow(QMainWindow):
         self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
         self.insert_method_combo.currentIndexChanged.connect(lambda index=0: self.save_typing_settings())
         self.restore_clipboard_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
+        self.start_with_windows_checkbox.stateChanged.connect(lambda state=0: self.save_startup_settings())
         self.performance_combo.currentIndexChanged.connect(lambda index=0: self.apply_performance_preset())
         self.device_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
         self.compute_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
@@ -391,6 +406,7 @@ class MainWindow(QMainWindow):
         self.mode_combo.setCurrentIndex(0 if mode == "hold" else 1)
         self.insert_method_combo.setCurrentIndex(0)
         self.restore_clipboard_checkbox.setChecked(bool(self.settings_manager.get("restore_clipboard", True)))
+        self.start_with_windows_checkbox.setChecked(bool(self.settings_manager.get("start_with_windows", False)))
         self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
         self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
         self._select_combo_data(self.compute_combo, self.settings_manager.get("compute_type", "auto"))
@@ -830,6 +846,23 @@ class MainWindow(QMainWindow):
                 "restore_clipboard": self.restore_clipboard_checkbox.isChecked(),
             }
         )
+
+    def save_startup_settings(self) -> None:
+        if self._loading_ui:
+            return
+        enabled = self.start_with_windows_checkbox.isChecked()
+        try:
+            self.startup_manager.set_enabled(enabled)
+        except StartupManagerError as exc:
+            self.start_with_windows_checkbox.blockSignals(True)
+            self.start_with_windows_checkbox.setChecked(not enabled)
+            self.start_with_windows_checkbox.blockSignals(False)
+            self.set_status("Error", str(exc))
+            QMessageBox.warning(self, "Startup setting problem", str(exc))
+            return
+        self.settings_manager.set("start_with_windows", enabled)
+        detail = "Whisper Anywhere will start hidden in the tray when Windows starts." if enabled else "Whisper Anywhere will not start with Windows."
+        self.set_status("Ready", detail)
 
     def save_performance_settings(self, prepare: bool = True) -> None:
         if self._loading_ui:

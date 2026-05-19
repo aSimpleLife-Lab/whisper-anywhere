@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+from ctypes import windll
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from core.audio_recorder import AudioRecorder
@@ -10,14 +12,23 @@ from core.feedback_player import FeedbackPlayer
 from core.hotkey_listener import HotkeyListener
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
+from core.startup_manager import StartupManager, StartupManagerError
 from core.text_inserter import TextInserter
 from core.transcriber import Transcriber
 from core.tray_manager import TrayManager
 from ui.main_window import MainWindow
 
 
+def should_start_minimized() -> bool:
+    flags = {"--minimized", "--hidden", "/minimized", "/tray"}
+    if flags.intersection(arg.lower() for arg in sys.argv[1:]):
+        return True
+    return any(flag in windll.kernel32.GetCommandLineW().lower() for flag in flags)
+
+
 def main() -> int:
     multiprocessing.freeze_support()
+    start_minimized = should_start_minimized()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Whisper Anywhere")
@@ -25,6 +36,13 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     settings_manager = SettingsManager()
+    startup_manager = StartupManager()
+    startup_sync_error = None
+    if settings_manager.get("start_with_windows", False):
+        try:
+            startup_manager.sync(True)
+        except StartupManagerError as exc:
+            startup_sync_error = str(exc)
     model_manager = ModelManager(settings_manager)
     audio_recorder = AudioRecorder()
     transcriber = Transcriber(model_manager)
@@ -34,7 +52,9 @@ def main() -> int:
         settings_manager.get("stop_sound_path", r"C:\Users\Ben\Downloads\stopsound.mp3"),
     )
 
-    window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter)
+    window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter, startup_manager)
+    if startup_sync_error:
+        window.set_status("Startup setting problem", startup_sync_error)
     tray = TrayManager(model_manager)
     hotkey = HotkeyListener(
         str(settings_manager.get("shortcut", "Ctrl+Alt+Q")),
@@ -74,7 +94,12 @@ def main() -> int:
 
     tray.show()
     hotkey.start()
-    window.show()
+    if start_minimized:
+        window.hide()
+        QTimer.singleShot(0, window.hide)
+        QTimer.singleShot(1000, window.hide)
+    else:
+        window.show()
 
     return app.exec()
 
