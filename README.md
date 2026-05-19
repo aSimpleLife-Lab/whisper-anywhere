@@ -31,6 +31,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Proper native Windows app, taskbar, tray, and EXE icon
 - Bundled custom start/stop feedback sounds
 - Click-to-record shortcut selection, including single-key shortcuts
+- Performance / Hardware settings save safely without breaking shortcuts
 - Feature list dropdown inside the app
 - Safer settings dropdowns that ignore mouse-wheel changes until opened
 - Optional **Start with Windows hidden in the tray**
@@ -61,6 +62,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Whisper model selector: `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3`, `turbo`
 - Model cards with Installed/Download status, speed, accuracy, resource estimate, and recommended use
 - Performance / Hardware controls for Auto, CPU Only, GPU Preferred, compute precision, presets, fallback, RAM/VRAM modes, and CPU threads
+- Performance changes defer heavy model preparation until the next shortcut use or **Prepare model now**
 - Local transcription with `faster-whisper`
 - Clipboard paste insertion into the focused Windows app
 - Restore previous plain-text clipboard after paste

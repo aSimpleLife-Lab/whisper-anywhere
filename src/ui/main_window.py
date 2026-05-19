@@ -37,6 +37,7 @@ from core.text_inserter import TextInserter, TextInsertionError, TextTarget
 from core.transcriber import Transcriber
 
 TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
+MODEL_PREPARE_TIMEOUT_SECONDS = 600.0
 FEATURE_ITEMS = [
     "Windows desktop app",
     "System tray support",
@@ -257,8 +258,9 @@ class MainWindow(QMainWindow):
     transcription_done = Signal(int, str, str)
     transcription_failed = Signal(int, str, str)
     transcription_timeout = Signal(int, str)
-    model_ready = Signal(str)
-    model_failed = Signal(str)
+    model_ready = Signal(int, str)
+    model_failed = Signal(int, str)
+    model_prepare_timeout = Signal(int)
 
     def __init__(
         self,
@@ -286,6 +288,9 @@ class MainWindow(QMainWindow):
         self._transcription_request_id = 0
         self._active_transcription_id = 0
         self._transcription_timer: threading.Timer | None = None
+        self._model_prepare_request_id = 0
+        self._active_model_prepare_id = 0
+        self._model_prepare_timer: threading.Timer | None = None
 
         self.model_buttons: dict[str, QPushButton] = {}
 
@@ -299,7 +304,7 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
         self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
-        self.prepare_selected_model(auto=True)
+        self._refresh_model_status()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -614,6 +619,7 @@ class MainWindow(QMainWindow):
         self.transcription_timeout.connect(self.handle_transcription_timeout)
         self.model_ready.connect(self.finish_model_prepare)
         self.model_failed.connect(self.fail_model_prepare)
+        self.model_prepare_timeout.connect(self.handle_model_prepare_timeout)
 
     def _load_settings_into_ui(self) -> None:
         self._loading_ui = True
@@ -656,6 +662,16 @@ class MainWindow(QMainWindow):
     def _pipeline_busy_message(self) -> str:
         return "Wait until the current recording, transcription, or model preparation finishes before changing models or performance settings."
 
+    def _refresh_model_status(self) -> None:
+        selected = self.model_manager.selected_model()
+        if self.model_manager.is_model_ready(selected):
+            self.model_status.setText(f"Model ready: {selected}")
+        elif bool(self.settings_manager.get("auto_download_models", True)):
+            self.model_status.setText(f"Model not prepared yet: {selected}. It will prepare when you use the shortcut.")
+        else:
+            self.model_status.setText(f"Model not prepared yet: {selected}. Click Prepare model now to download it.")
+        self._update_model_buttons(selected)
+
     def _restore_performance_controls(self) -> None:
         self._loading_ui = True
         try:
@@ -687,10 +703,25 @@ class MainWindow(QMainWindow):
         self._transcription_timer = timer
         timer.start()
 
+    def _cancel_model_prepare_timer(self) -> None:
+        if self._model_prepare_timer is not None:
+            self._model_prepare_timer.cancel()
+            self._model_prepare_timer = None
+
+    def _start_model_prepare_timer(self, request_id: int) -> None:
+        self._cancel_model_prepare_timer()
+        timer = threading.Timer(
+            MODEL_PREPARE_TIMEOUT_SECONDS,
+            lambda: self.model_prepare_timeout.emit(request_id),
+        )
+        timer.daemon = True
+        self._model_prepare_timer = timer
+        timer.start()
+
     def _reset_transcriber(self) -> None:
         self.transcriber = Transcriber(self.model_manager)
 
-    def select_model(self, model_name: str) -> None:
+    def select_model(self, model_name: str, prepare: bool = True) -> None:
         if self._pipeline_busy():
             self._update_model_buttons(self.model_manager.selected_model())
             self.set_status("Busy", self._pipeline_busy_message())
@@ -704,7 +735,10 @@ class MainWindow(QMainWindow):
         self._update_model_buttons(normalized)
         self.update_bottom_labels()
         self.model_changed.emit(normalized)
-        self.prepare_selected_model(auto=True)
+        if prepare:
+            self.prepare_selected_model(auto=True)
+        else:
+            self._refresh_model_status()
 
     def _confirm_model_choice(self, model_name: str) -> bool:
         warnings: list[str] = []
@@ -771,21 +805,31 @@ class MainWindow(QMainWindow):
                 return
 
         self._is_preparing_model = True
+        self._model_prepare_request_id += 1
+        request_id = self._model_prepare_request_id
+        self._active_model_prepare_id = request_id
         self.model_progress.setVisible(True)
         self.model_progress.setRange(0, 0)
         self.model_status.setText(f"Preparing {selected} model. This can take a while the first time.")
         settings = self.settings_manager.all()
-        threading.Thread(target=self._prepare_model_worker, args=(settings,), daemon=True).start()
+        transcriber = self.transcriber
+        self._start_model_prepare_timer(request_id)
+        threading.Thread(target=self._prepare_model_worker, args=(request_id, settings, transcriber), daemon=True).start()
 
-    def _prepare_model_worker(self, settings: dict[str, Any]) -> None:
+    def _prepare_model_worker(self, request_id: int, settings: dict[str, Any], transcriber: Transcriber) -> None:
         try:
-            self.transcriber.prepare_selected_model(settings)
+            transcriber.prepare_selected_model(settings)
         except Exception as exc:
-            self.model_failed.emit(str(exc))
+            self.model_failed.emit(request_id, str(exc))
         else:
-            self.model_ready.emit(self.model_manager.selected_model())
+            self.model_ready.emit(request_id, self.model_manager.selected_model())
 
-    def finish_model_prepare(self, model_name: str) -> None:
+    def finish_model_prepare(self, request_id: int, model_name: str) -> None:
+        if request_id != self._active_model_prepare_id:
+            self._append_activity_log(f"finish_model_prepare ignored stale id={request_id}")
+            return
+        self._cancel_model_prepare_timer()
+        self._active_model_prepare_id = 0
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
         self._update_model_buttons(model_name)
@@ -798,9 +842,27 @@ class MainWindow(QMainWindow):
             shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
             self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
 
-    def fail_model_prepare(self, message: str) -> None:
+    def fail_model_prepare(self, request_id: int, message: str) -> None:
+        if request_id != self._active_model_prepare_id:
+            self._append_activity_log(f"fail_model_prepare ignored stale id={request_id}: {message}")
+            return
+        self._cancel_model_prepare_timer()
+        self._active_model_prepare_id = 0
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
+        self._reset_transcriber()
+        self.model_status.setText(message)
+        self.set_status("Error", message)
+
+    def handle_model_prepare_timeout(self, request_id: int) -> None:
+        if request_id != self._active_model_prepare_id or not self._is_preparing_model:
+            return
+        self._active_model_prepare_id = 0
+        self._is_preparing_model = False
+        self.model_progress.setVisible(False)
+        self._reset_transcriber()
+        message = "Model preparation took too long and was cancelled. Switch to CPU / a smaller model, or try Prepare model now again."
+        self._append_activity_log(f"model preparation timeout id={request_id}")
         self.model_status.setText(message)
         self.set_status("Error", message)
 
@@ -832,7 +894,10 @@ class MainWindow(QMainWindow):
         if not self.model_manager.is_model_ready():
             self._append_activity_log("start_listening triggered model prepare")
             self.prepare_selected_model(auto=True)
-            self.set_status("Preparing", "Preparing the selected Whisper model first.")
+            if self._is_preparing_model:
+                self.set_status("Preparing", "Preparing the selected Whisper model first. Use the shortcut again when it says Ready.")
+            else:
+                self.set_status("Model not ready", "Auto-download is off. Click Prepare model now before using the shortcut.")
             return
 
         microphone_id = self.mic_combo.currentData() or "default"
@@ -1057,13 +1122,13 @@ class MainWindow(QMainWindow):
 
         self.save_performance_settings(prepare=False)
         if model_hint and model_hint != self.model_manager.selected_model():
-            self.select_model(model_hint)
+            self.select_model(model_hint, prepare=False)
         else:
-            self.prepare_selected_model(auto=True)
-        if self._is_preparing_model:
-            self.set_status("Preparing", f"Applying {self.performance_combo.currentText()} mode and preparing the model.")
-        else:
-            self.set_status("Ready", f"Performance mode saved: {self.performance_combo.currentText()}")
+            self._refresh_model_status()
+        self.set_status(
+            "Ready",
+            f"Performance mode saved: {self.performance_combo.currentText()}. Use the shortcut or Prepare model now when ready.",
+        )
 
     def save_microphone_setting(self) -> None:
         if self._loading_ui:
@@ -1099,7 +1164,7 @@ class MainWindow(QMainWindow):
         detail = "Whisper Anywhere will start hidden in the tray when Windows starts." if enabled else "Whisper Anywhere will not start with Windows."
         self.set_status("Ready", detail)
 
-    def save_performance_settings(self, prepare: bool = True) -> None:
+    def save_performance_settings(self, prepare: bool = False) -> None:
         if self._loading_ui:
             return
         if self._pipeline_busy():
@@ -1122,8 +1187,11 @@ class MainWindow(QMainWindow):
         )
         self._reset_transcriber()
         self.update_bottom_labels()
+        self._refresh_model_status()
         if prepare and self.auto_download_checkbox.isChecked():
             self.prepare_selected_model(auto=True)
+        elif not self._loading_ui:
+            self.set_status("Ready", "Performance settings saved. Use the shortcut or Prepare model now when ready.")
 
     def update_shortcut_warning(self) -> None:
         if self._is_capturing_shortcut:
