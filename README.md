@@ -29,6 +29,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 <summary><strong>Current build</strong> - latest EXE in the download link above</summary>
 
 - Proper native Windows app, taskbar, tray, and EXE icon
+- Bundled custom start/stop feedback sounds
 - Feature list dropdown inside the app
 - Safer settings dropdowns that ignore mouse-wheel changes until opened
 - Optional **Start with Windows hidden in the tray**
@@ -62,6 +63,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Local transcription with `faster-whisper`
 - Clipboard paste insertion into the focused Windows app
 - Restore previous plain-text clipboard after paste
+- Bundled custom start and stop feedback sounds
 - Optional Windows startup launch hidden in the tray
 - Safer dropdowns that do not change settings while you are just scrolling the page
 - Automatic local folder creation
@@ -220,8 +222,8 @@ Temporary recordings are deleted after transcription by default.
   "shortcut": "Ctrl+Alt+Q",
   "shortcut_mode": "hold",
   "hotkey_default_version": 3,
-  "start_sound_path": "C:\\Users\\Ben\\Downloads\\startsound.mp3",
-  "stop_sound_path": "C:\\Users\\Ben\\Downloads\\stopsound.mp3",
+  "start_sound_path": "",
+  "stop_sound_path": "",
   "device": "cpu",
   "compute_type": "int8",
   "performance_preset": "balanced",

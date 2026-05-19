@@ -62,8 +62,8 @@ def main() -> int:
     transcriber = Transcriber(model_manager)
     text_inserter = TextInserter()
     feedback_player = FeedbackPlayer(
-        settings_manager.get("start_sound_path", r"C:\Users\Ben\Downloads\startsound.mp3"),
-        settings_manager.get("stop_sound_path", r"C:\Users\Ben\Downloads\stopsound.mp3"),
+        settings_manager.get("start_sound_path", ""),
+        settings_manager.get("stop_sound_path", ""),
     )
 
     window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter, startup_manager)
@@ -74,8 +74,8 @@ def main() -> int:
         str(settings_manager.get("shortcut", "Ctrl+Alt+Q")),
         str(settings_manager.get("shortcut_mode", "hold")),
         log_path=settings_manager.hotkey_log_path,
-        start_sound_path=str(settings_manager.get("start_sound_path", r"C:\Users\Ben\Downloads\startsound.mp3")),
-        stop_sound_path=str(settings_manager.get("stop_sound_path", r"C:\Users\Ben\Downloads\stopsound.mp3")),
+        start_sound_path=str(settings_manager.get("start_sound_path", "")),
+        stop_sound_path=str(settings_manager.get("stop_sound_path", "")),
     )
 
     hotkey.pressed.connect(window.start_listening)

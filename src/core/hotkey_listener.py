@@ -19,8 +19,8 @@ except Exception:  # pragma: no cover - dependency missing at runtime
     pynput_keyboard = None
 
 WATCHDOG_SECONDS = 60.0
-DEFAULT_START_SOUND_PATH = r"C:\Users\Ben\Downloads\startsound.mp3"
-DEFAULT_STOP_SOUND_PATH = r"C:\Users\Ben\Downloads\stopsound.mp3"
+DEFAULT_START_SOUND_PATH = ""
+DEFAULT_STOP_SOUND_PATH = ""
 
 KEY_NAME_TO_VK = {
     "space": 0x20,

@@ -36,8 +36,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
-    "start_sound_path": r"C:\Users\Ben\Downloads\startsound.mp3",
-    "stop_sound_path": r"C:\Users\Ben\Downloads\stopsound.mp3",
+    "start_sound_path": "",
+    "stop_sound_path": "",
     "device": "cpu",
     "compute_type": "int8",
     "performance_preset": "balanced",
@@ -183,6 +183,10 @@ class SettingsManager:
             migrated["device"] = "gpu" if bool(migrated.get("use_gpu")) else "auto"
         if "use_gpu_if_available" not in migrated and "use_gpu" in migrated:
             migrated["use_gpu_if_available"] = bool(migrated.get("use_gpu"))
+        if str(migrated.get("start_sound_path", "")).lower() == r"c:\users\ben\downloads\startsound.mp3":
+            migrated["start_sound_path"] = ""
+        if str(migrated.get("stop_sound_path", "")).lower() == r"c:\users\ben\downloads\stopsound.mp3":
+            migrated["stop_sound_path"] = ""
         return migrated
 
     def _normalize(self, values: dict[str, Any]) -> dict[str, Any]:
