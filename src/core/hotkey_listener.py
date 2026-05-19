@@ -240,15 +240,32 @@ def shortcut_warning(shortcut_text: str) -> str:
         return str(exc)
 
     common = {
+        "ctrl+a": "Ctrl+A selects all in most apps.",
         "ctrl+c": "Ctrl+C is copy in most apps.",
+        "ctrl+f": "Ctrl+F opens find in most apps.",
+        "ctrl+n": "Ctrl+N creates a new item/window in many apps.",
+        "ctrl+o": "Ctrl+O opens files in many apps.",
+        "ctrl+p": "Ctrl+P prints in many apps.",
+        "ctrl+s": "Ctrl+S saves in most apps.",
         "ctrl+v": "Ctrl+V is paste in most apps.",
+        "ctrl+w": "Ctrl+W closes browser/editor tabs.",
         "ctrl+x": "Ctrl+X is cut in most apps.",
+        "ctrl+y": "Ctrl+Y is redo in many apps.",
         "ctrl+z": "Ctrl+Z is undo in most apps.",
+        "ctrl+shift+esc": "Ctrl+Shift+Esc opens Task Manager.",
+        "ctrl+alt+delete": "Ctrl+Alt+Delete is reserved by Windows.",
+        "ctrl+alt+del": "Ctrl+Alt+Delete is reserved by Windows.",
+        "alt+f4": "Alt+F4 closes the active window.",
         "alt+tab": "Alt+Tab switches apps in Windows.",
+        "alt+space": "Alt+Space opens the window menu.",
+        "win+a": "Win+A opens Windows Quick Settings.",
         "win+l": "Win+L locks Windows.",
         "win+d": "Win+D shows the desktop.",
         "win+r": "Win+R opens Run.",
         "win+e": "Win+E opens File Explorer.",
+        "win+i": "Win+I opens Windows Settings.",
+        "win+s": "Win+S opens Windows Search.",
+        "win+tab": "Win+Tab opens Task View.",
     }
     if display in common:
         return common[display]
@@ -256,8 +273,14 @@ def shortcut_warning(shortcut_text: str) -> str:
         return "Single-key shortcuts can trigger while typing. Use a modifier if it gets in the way."
     if parsed.trigger_vk is None:
         return "Modifier-only shortcuts are unreliable. Ctrl+Alt+Q is recommended."
+    if parsed.trigger_token in {"esc", "tab", "enter", "backspace", "delete", "space"} and len(parsed.modifiers) < 2:
+        return "This key is used heavily by Windows and apps. Add two modifiers or use Ctrl+Alt+Q."
+    if parsed.trigger_token and parsed.trigger_token.startswith("f") and parsed.trigger_token in {"f1", "f5", "f11", "f12"}:
+        return "This function key is commonly used by Windows, browsers, or developer tools."
     if "win" in parsed.modifiers:
         return "Windows-key shortcuts can be intercepted by the shell on some systems. Ctrl+Alt+Q is the safest default."
+    if parsed.modifiers == frozenset({"ctrl"}) or parsed.modifiers == frozenset({"alt"}):
+        return "Single-modifier shortcuts often conflict with app menus and editor/browser shortcuts. Ctrl+Alt+Q is recommended."
     return ""
 
 

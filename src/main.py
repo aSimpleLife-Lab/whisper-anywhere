@@ -7,6 +7,7 @@ from ctypes import c_wchar_p, windll
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from core.app_version import APP_VERSION
 from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
 from core.feedback_player import FeedbackPlayer
@@ -45,6 +46,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Whisper Anywhere")
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("Whisper Anywhere")
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)

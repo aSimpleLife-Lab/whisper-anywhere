@@ -47,6 +47,13 @@ class AudioRecorder:
             return devices
         return devices
 
+    def input_device_by_id(self, device_id: str | None) -> AudioDevice | None:
+        wanted = str(device_id or "default")
+        for device in self.list_input_devices():
+            if device.id == wanted:
+                return device
+        return None
+
     def start(self, microphone_device: str = "default", level_callback: Callable[[float], None] | None = None) -> None:
         if self.is_recording:
             raise AudioRecorderError("The microphone is already recording.")

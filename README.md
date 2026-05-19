@@ -12,7 +12,7 @@ This is not a web app and it does not use a cloud API in V1.
 
 The easiest way to try Whisper Anywhere is to download the prebuilt Windows release:
 
-**Download latest Windows build:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.0/Whisper-Anywhere-Windows.zip)
+**Download latest Windows build:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.1/Whisper-Anywhere-Windows.zip)
 
 After downloading:
 
@@ -26,7 +26,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build</strong> - latest EXE in the download link above</summary>
+<summary><strong>Current build - v0.1.1</strong> - setup, updates, microphone, diagnostics, and portable settings</summary>
 
 - Proper native Windows app, taskbar, tray, and EXE icon
 - Bundled custom start/stop feedback sounds
@@ -35,6 +35,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Feature list dropdown inside the app
 - Safer settings dropdowns that ignore mouse-wheel changes until opened
 - Optional **Start with Windows hidden in the tray**
+- In-app version display, manual update check, first-run setup with a run-again button, microphone fallback, diagnostics export, portable settings import/export, and optional installer script
 
 </details>
 
@@ -56,6 +57,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Global hold-to-talk shortcut: `Ctrl + Alt + Q`
 - Optional toggle shortcut mode
 - Shortcut settings UI with click-to-record shortcut selection
+- First-run setup for shortcut, model, microphone, and CPU/GPU choice, plus a **Run setup again** button
 - Feature list dropdown inside the app
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
@@ -63,11 +65,16 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Model cards with Installed/Download status, speed, accuracy, resource estimate, and recommended use
 - Performance / Hardware controls for Auto, CPU Only, GPU Preferred, compute precision, presets, fallback, RAM/VRAM modes, and CPU threads
 - Performance changes defer heavy model preparation until the next shortcut use or **Prepare model now**
+- Clear model preparation/download progress text while the UI remains responsive
 - Local transcription with `faster-whisper`
 - Clipboard paste insertion into the focused Windows app
 - Restore previous plain-text clipboard after paste
 - Bundled custom start and stop feedback sounds
 - Optional Windows startup launch hidden in the tray
+- Manual **Check for updates** button that opens the GitHub release page when a newer release is available
+- Safe diagnostics copy/save for support, with personal paths sanitized
+- Portable settings export/import for moving settings to another PC
+- Optional Inno Setup installer build script while preserving the ZIP release flow
 - Safer dropdowns that do not change settings while you are just scrolling the page
 - Automatic local folder creation
 - Automatic selected-model preparation/download when enabled
@@ -194,6 +201,20 @@ dist\Whisper Anywhere\Whisper Anywhere.exe
 ```
 
 The EXE bundles Python and Python dependencies. Whisper model files are not bundled because they are large; the app downloads/prepares the selected model automatically on first use and stores it locally.
+
+## Optional Installer Build
+
+The ZIP/onedir release remains the primary release path. Developers who also want a Windows installer can install Inno Setup 6 and run:
+
+```powershell
+.\scripts\build_installer.ps1
+```
+
+The script reuses `dist\Whisper Anywhere\Whisper Anywhere.exe` and creates `dist\Whisper-Anywhere-Setup.exe` when Inno Setup is available.
+
+## Versioning
+
+The in-app version lives in `src\core\app_version.py`. Keep it aligned with this Developer Update Log and the GitHub release tag when preparing a public release.
 
 ## Local Files
 

@@ -28,6 +28,8 @@ def default_model_path() -> str:
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "settings_schema_version": 2,
+    "first_run_setup_completed": False,
     "selected_model": "base",
     "microphone_device": "default",
     "shortcut": "Ctrl+Alt+Q",
@@ -153,6 +155,39 @@ class SettingsManager:
             self.save()
             self.ensure_local_folders()
 
+    def portable_export(self) -> dict[str, Any]:
+        """Return settings that are safe to move to another PC."""
+        exported = deepcopy(self._settings)
+        default_path = default_model_path()
+        for path_key in ("model_path", "start_sound_path", "stop_sound_path"):
+            value = str(exported.get(path_key, "") or "")
+            if not value:
+                continue
+            if path_key == "model_path" and value == default_path:
+                continue
+            exported[path_key] = ""
+        exported["start_with_windows"] = False
+        exported["settings_schema_version"] = DEFAULT_SETTINGS["settings_schema_version"]
+        return exported
+
+    def import_portable(self, values: dict[str, Any]) -> list[str]:
+        if not isinstance(values, dict):
+            raise ValueError("Settings import must be a JSON object.")
+        accepted: dict[str, Any] = {}
+        ignored: list[str] = []
+        for key, value in values.items():
+            if key not in DEFAULT_SETTINGS:
+                ignored.append(str(key))
+                continue
+            if key in {"model_path", "start_sound_path", "stop_sound_path"}:
+                candidate = str(value or "")
+                if candidate and candidate != default_model_path():
+                    ignored.append(key)
+                    continue
+            accepted[key] = value
+        self.update(accepted)
+        return ignored
+
     def reset(self) -> None:
         self._settings = deepcopy(DEFAULT_SETTINGS)
         self.save()
@@ -160,6 +195,8 @@ class SettingsManager:
 
     def _migrate_settings(self, loaded: dict[str, Any]) -> dict[str, Any]:
         migrated = dict(loaded)
+        if "first_run_setup_completed" not in migrated:
+            migrated["first_run_setup_completed"] = True
         shortcut_value = str(migrated.get("shortcut", "")).lower().replace(" ", "")
         hotkey_version = int(migrated.get("hotkey_default_version") or 0)
         if hotkey_version < 2 and shortcut_value == "ctrl+win":

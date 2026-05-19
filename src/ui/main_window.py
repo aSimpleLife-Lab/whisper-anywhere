@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import threading
+import json
+import re
+import time
+import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -27,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.app_version import APP_VERSION, GITHUB_RELEASES_API, GITHUB_RELEASES_URL
 from core.app_icon import app_icon, apply_native_window_icon
 from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
@@ -66,6 +77,67 @@ class SafeComboBox(QComboBox):
             super().wheelEvent(event)
             return
         event.ignore()
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", value)
+    return tuple(int(part) for part in parts[:4]) if parts else (0,)
+
+
+def _sanitize_path_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"[A-Za-z]:\\Users\\[^\\\r\n]+", r"%USERPROFILE%", text)
+    return text
+
+
+class FirstRunSetupDialog(QDialog):
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Whisper Anywhere first-run setup")
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Choose safe starter settings. You can change all of these later in the main window."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        self.shortcut_input = ShortcutCaptureInput()
+        self.shortcut_input.setText(str(parent.settings_manager.get("shortcut", "Ctrl+Alt+Q")))
+        form.addRow("Shortcut", self.shortcut_input)
+
+        self.model_combo = SafeComboBox()
+        for info in parent.model_manager.models():
+            self.model_combo.addItem(info.name, info.name)
+        parent._select_combo_data(self.model_combo, parent.model_manager.selected_model())
+        form.addRow("Whisper model", self.model_combo)
+
+        self.mic_combo = SafeComboBox()
+        for device in parent.audio_recorder.list_input_devices():
+            self.mic_combo.addItem(device.name, device.id)
+        parent._select_combo_data(self.mic_combo, parent.settings_manager.get("microphone_device", "default"))
+        form.addRow("Microphone", self.mic_combo)
+
+        self.device_combo = SafeComboBox()
+        self.device_combo.addItem("CPU Only - safest", "cpu")
+        self.device_combo.addItem("Auto", "auto")
+        self.device_combo.addItem("GPU Preferred - advanced", "gpu")
+        parent._select_combo_data(self.device_combo, parent.settings_manager.get("device", "cpu"))
+        form.addRow("Hardware", self.device_combo)
+        layout.addLayout(form)
+
+        note = QLabel("Safe default: Ctrl+Alt+Q, base model, default microphone, CPU/int8.")
+        note.setWordWrap(True)
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Save setup")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Skip for now")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 def _qt_key_value(key: Qt.Key) -> int:
@@ -261,6 +333,7 @@ class MainWindow(QMainWindow):
     model_ready = Signal(int, str)
     model_failed = Signal(int, str)
     model_prepare_timeout = Signal(int)
+    update_checked = Signal(bool, str, str)
 
     def __init__(
         self,
@@ -291,10 +364,14 @@ class MainWindow(QMainWindow):
         self._model_prepare_request_id = 0
         self._active_model_prepare_id = 0
         self._model_prepare_timer: threading.Timer | None = None
+        self._model_prepare_started_at = 0.0
+        self._model_progress_timer = QTimer(self)
+        self._model_progress_timer.setInterval(1000)
+        self._model_progress_timer.timeout.connect(self._tick_model_progress)
 
         self.model_buttons: dict[str, QPushButton] = {}
 
-        self.setWindowTitle("Whisper Anywhere")
+        self.setWindowTitle(f"Whisper Anywhere {APP_VERSION}")
         self.setWindowIcon(app_icon())
         self.setMinimumSize(1080, 780)
         self._build_ui()
@@ -305,6 +382,8 @@ class MainWindow(QMainWindow):
         shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
         self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
         self._refresh_model_status()
+        if not bool(self.settings_manager.get("first_run_setup_completed", False)):
+            QTimer.singleShot(500, self.show_first_run_setup)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -339,6 +418,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._build_model_panel())
         content_layout.addWidget(self._build_settings_panel())
         content_layout.addWidget(self._build_performance_panel())
+        content_layout.addWidget(self._build_support_panel())
         content_layout.addWidget(self._build_how_it_works_panel())
         content_layout.addWidget(self._build_output_panel())
         scroll.setWidget(content)
@@ -390,6 +470,35 @@ class MainWindow(QMainWindow):
         text_block.addWidget(self.shortcut_reminder)
         layout.addLayout(text_block, 1)
 
+        return panel
+
+    def _build_support_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("panel")
+        layout = QGridLayout(panel)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(12)
+
+        title = QLabel("About / Support")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title, 0, 0, 1, 4)
+        self.version_label = QLabel(f"Version: {APP_VERSION}")
+        self.version_label.setObjectName("mutedLabel")
+        layout.addWidget(self.version_label, 1, 0, 1, 4)
+
+        self.check_updates_button = QPushButton("Check for updates")
+        self.copy_diagnostics_button = QPushButton("Copy diagnostics")
+        self.save_diagnostics_button = QPushButton("Save diagnostics")
+        self.export_settings_button = QPushButton("Export settings")
+        self.import_settings_button = QPushButton("Import settings")
+        self.run_setup_button = QPushButton("Run setup again")
+        layout.addWidget(self.check_updates_button, 2, 0)
+        layout.addWidget(self.copy_diagnostics_button, 2, 1)
+        layout.addWidget(self.save_diagnostics_button, 2, 2)
+        layout.addWidget(self.export_settings_button, 3, 0)
+        layout.addWidget(self.import_settings_button, 3, 1)
+        layout.addWidget(self.run_setup_button, 3, 2)
         return panel
 
     def _build_model_panel(self) -> QWidget:
@@ -594,6 +703,12 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.mic_button.clicked.connect(lambda checked=False: self.toggle_manual_listening())
         self.prepare_model_button.clicked.connect(lambda checked=False: self.prepare_selected_model(auto=False))
+        self.check_updates_button.clicked.connect(lambda checked=False: self.check_for_updates())
+        self.copy_diagnostics_button.clicked.connect(lambda checked=False: self.copy_diagnostics())
+        self.save_diagnostics_button.clicked.connect(lambda checked=False: self.save_diagnostics())
+        self.export_settings_button.clicked.connect(lambda checked=False: self.export_settings())
+        self.import_settings_button.clicked.connect(lambda checked=False: self.import_settings())
+        self.run_setup_button.clicked.connect(lambda checked=False: self.show_first_run_setup(force=True))
         self.apply_shortcut_button.clicked.connect(lambda checked=False: self.apply_shortcut_settings())
         self.shortcut_input.textChanged.connect(lambda text="": self.update_shortcut_warning())
         self.shortcut_input.capture_started.connect(self.start_shortcut_capture)
@@ -620,6 +735,7 @@ class MainWindow(QMainWindow):
         self.model_ready.connect(self.finish_model_prepare)
         self.model_failed.connect(self.fail_model_prepare)
         self.model_prepare_timeout.connect(self.handle_model_prepare_timeout)
+        self.update_checked.connect(self.finish_update_check)
 
     def _load_settings_into_ui(self) -> None:
         self._loading_ui = True
@@ -650,9 +766,14 @@ class MainWindow(QMainWindow):
         current = str(self.settings_manager.get("microphone_device", "default"))
         self.mic_combo.blockSignals(True)
         self.mic_combo.clear()
-        for device in self.audio_recorder.list_input_devices():
+        devices = self.audio_recorder.list_input_devices()
+        for device in devices:
             self.mic_combo.addItem(device.name, device.id)
         index = self.mic_combo.findData(current)
+        if index < 0 and current != "default":
+            self.settings_manager.set("microphone_device", "default")
+            self._append_activity_log(f"selected microphone missing: {current}; falling back to default")
+            self.set_status("Microphone changed", "The saved microphone was not found, so the default system microphone will be used.")
         self.mic_combo.setCurrentIndex(index if index >= 0 else 0)
         self.mic_combo.blockSignals(False)
 
@@ -805,12 +926,14 @@ class MainWindow(QMainWindow):
                 return
 
         self._is_preparing_model = True
+        self._model_prepare_started_at = time.monotonic()
         self._model_prepare_request_id += 1
         request_id = self._model_prepare_request_id
         self._active_model_prepare_id = request_id
         self.model_progress.setVisible(True)
         self.model_progress.setRange(0, 0)
-        self.model_status.setText(f"Preparing {selected} model. This can take a while the first time.")
+        self.model_status.setText(f"Preparing {selected} model. Downloading/loading may take several minutes the first time.")
+        self._model_progress_timer.start()
         settings = self.settings_manager.all()
         transcriber = self.transcriber
         self._start_model_prepare_timer(request_id)
@@ -832,6 +955,7 @@ class MainWindow(QMainWindow):
         self._active_model_prepare_id = 0
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
+        self._model_progress_timer.stop()
         self._update_model_buttons(model_name)
         message = self.transcriber.runtime_message
         if message:
@@ -850,6 +974,7 @@ class MainWindow(QMainWindow):
         self._active_model_prepare_id = 0
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
+        self._model_progress_timer.stop()
         self._reset_transcriber()
         self.model_status.setText(message)
         self.set_status("Error", message)
@@ -860,11 +985,22 @@ class MainWindow(QMainWindow):
         self._active_model_prepare_id = 0
         self._is_preparing_model = False
         self.model_progress.setVisible(False)
+        self._model_progress_timer.stop()
         self._reset_transcriber()
         message = "Model preparation took too long and was cancelled. Switch to CPU / a smaller model, or try Prepare model now again."
         self._append_activity_log(f"model preparation timeout id={request_id}")
         self.model_status.setText(message)
         self.set_status("Error", message)
+
+    def _tick_model_progress(self) -> None:
+        if not self._is_preparing_model:
+            self._model_progress_timer.stop()
+            return
+        elapsed = int(max(0, time.monotonic() - self._model_prepare_started_at))
+        selected = self.model_manager.selected_model()
+        self.model_status.setText(
+            f"Preparing {selected} model... {elapsed}s elapsed. First download can be slow; shortcuts stay disabled until ready."
+        )
 
     def toggle_manual_listening(self) -> None:
         if self._is_listening:
@@ -900,7 +1036,7 @@ class MainWindow(QMainWindow):
                 self.set_status("Model not ready", "Auto-download is off. Click Prepare model now before using the shortcut.")
             return
 
-        microphone_id = self.mic_combo.currentData() or "default"
+        microphone_id = self._selected_microphone_id()
         current_target = self.text_inserter.get_foreground_window()
         own_window_hwnd = int(self.winId())
         if current_target and current_target.window_hwnd != own_window_hwnd:
@@ -918,6 +1054,19 @@ class MainWindow(QMainWindow):
         self._is_listening = True
         self.mic_button.setText("STOP")
         self.set_status("Listening", "Speak clearly. Release the shortcut to transcribe and type.")
+
+    def _selected_microphone_id(self) -> str:
+        microphone_id = str(self.mic_combo.currentData() or self.settings_manager.get("microphone_device", "default") or "default")
+        if microphone_id == "default":
+            return "default"
+        if self.audio_recorder.input_device_by_id(microphone_id) is not None:
+            return microphone_id
+        self._append_activity_log(f"microphone missing before recording: {microphone_id}; using default")
+        self.settings_manager.set("microphone_device", "default")
+        self.refresh_microphones()
+        self.update_bottom_labels()
+        self.set_status("Microphone changed", "The selected microphone is missing, so the default system microphone will be used.")
+        return "default"
 
     def stop_listening_and_transcribe(self, release_window_hwnd: object = None) -> None:
         if not self._is_listening:
@@ -1049,7 +1198,14 @@ class MainWindow(QMainWindow):
 
         warning = shortcut_warning(shortcut)
         if warning:
-            QMessageBox.warning(self, "Shortcut warning", warning)
+            answer = QMessageBox.question(
+                self,
+                "Shortcut warning",
+                f"{warning}\n\nSave this shortcut anyway?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.set_status("Shortcut not saved", "Choose a safer shortcut or keep Ctrl+Alt+Q.")
+                return
         mode = str(self.mode_combo.currentData() or "hold")
         self.shortcut_changed.emit(shortcut, mode)
         self.settings_manager.update({"shortcut": shortcut, "shortcut_mode": mode})
@@ -1192,6 +1348,156 @@ class MainWindow(QMainWindow):
             self.prepare_selected_model(auto=True)
         elif not self._loading_ui:
             self.set_status("Ready", "Performance settings saved. Use the shortcut or Prepare model now when ready.")
+
+    def show_first_run_setup(self, force: bool = False) -> None:
+        if not force and bool(self.settings_manager.get("first_run_setup_completed", False)):
+            return
+        dialog = FirstRunSetupDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            shortcut = dialog.shortcut_input.text().strip() or "Ctrl+Alt+Q"
+            try:
+                parse_shortcut(shortcut)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Shortcut problem", str(exc))
+                return
+            self.settings_manager.update(
+                {
+                    "shortcut": shortcut,
+                    "shortcut_mode": "hold",
+                    "selected_model": str(dialog.model_combo.currentData() or "base"),
+                    "microphone_device": str(dialog.mic_combo.currentData() or "default"),
+                    "device": str(dialog.device_combo.currentData() or "cpu"),
+                    "compute_type": "int8",
+                    "use_gpu_if_available": str(dialog.device_combo.currentData() or "cpu") == "gpu",
+                    "first_run_setup_completed": True,
+                }
+            )
+            self.shortcut_changed.emit(shortcut, "hold")
+            self._load_settings_into_ui()
+            self._refresh_model_status()
+            self.set_status("Ready", "First-run setup saved. Use the shortcut or Prepare model now when ready.")
+        else:
+            if not force:
+                self.settings_manager.set("first_run_setup_completed", True)
+            self.set_status("Ready", "First-run setup cancelled. Current settings are unchanged.")
+
+    def check_for_updates(self) -> None:
+        self.check_updates_button.setEnabled(False)
+        self.set_status("Checking updates", "Checking the latest GitHub release. No update will be installed automatically.")
+        threading.Thread(target=self._check_for_updates_worker, daemon=True).start()
+
+    def _check_for_updates_worker(self) -> None:
+        try:
+            request = urllib.request.Request(GITHUB_RELEASES_API, headers={"User-Agent": "Whisper Anywhere"})
+            with urllib.request.urlopen(request, timeout=12) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            latest = str(payload.get("tag_name") or payload.get("name") or "")
+            url = str(payload.get("html_url") or GITHUB_RELEASES_URL)
+            if not latest:
+                raise ValueError("GitHub did not return a release tag.")
+            has_update = _version_tuple(latest) > _version_tuple(APP_VERSION)
+            self.update_checked.emit(has_update, latest, url)
+        except Exception as exc:
+            self.update_checked.emit(False, "", str(exc))
+
+    def finish_update_check(self, has_update: bool, latest: str, detail: str) -> None:
+        self.check_updates_button.setEnabled(True)
+        if not latest:
+            self.set_status("Update check failed", detail)
+            QMessageBox.warning(self, "Update check failed", f"Could not check GitHub releases:\n\n{detail}")
+            return
+        if has_update:
+            answer = QMessageBox.question(
+                self,
+                "Update available",
+                f"Installed version: {APP_VERSION}\nLatest release: {latest}\n\nOpen the release/download page?",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                webbrowser.open(detail)
+            self.set_status("Update available", f"Latest release is {latest}. Updates are manual downloads only.")
+        else:
+            self.set_status("Up to date", f"Installed version {APP_VERSION}; latest release {latest}.")
+            QMessageBox.information(self, "No update found", f"Whisper Anywhere is up to date.\n\nCurrent: {APP_VERSION}\nLatest: {latest}")
+
+    def _recent_safe_log_lines(self, max_lines: int = 40) -> list[str]:
+        lines: list[str] = []
+        for log_path in (self.settings_manager.hotkey_log_path, self.settings_manager.config_dir / "activity.log"):
+            try:
+                raw_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in raw_lines[-max_lines:]:
+                if " text=" in line or "audio captured:" in line or "path=" in line:
+                    continue
+                lines.append(_sanitize_path_text(line))
+        return lines[-max_lines:]
+
+    def diagnostics_text(self) -> str:
+        settings = self.settings_manager.portable_export()
+        microphone_id = str(self.settings_manager.get("microphone_device", "default"))
+        microphone = self.audio_recorder.input_device_by_id(microphone_id) or self.audio_recorder.input_device_by_id("default")
+        payload = {
+            "app": "Whisper Anywhere",
+            "version": APP_VERSION,
+            "settings": settings,
+            "runtime": {
+                "model": self.model_manager.selected_model(),
+                "device": self.settings_manager.get("device", "cpu"),
+                "compute_type": self.settings_manager.get("compute_type", "int8"),
+                "cpu_threads": self.settings_manager.get("cpu_threads", "auto"),
+            },
+            "hotkey_status": self.hotkey_status_label.text(),
+            "selected_microphone": {
+                "id": microphone_id if microphone_id == "default" else "<device-id>",
+                "name": microphone.name if microphone else "Default system microphone",
+            },
+            "recent_logs": self._recent_safe_log_lines(),
+        }
+        return json.dumps(payload, indent=2)
+
+    def copy_diagnostics(self) -> None:
+        QApplication.clipboard().setText(self.diagnostics_text())
+        self.set_status("Diagnostics copied", "Safe diagnostics were copied to the clipboard.")
+
+    def save_diagnostics(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save diagnostics", "Whisper-Anywhere-Diagnostics.json", "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.diagnostics_text() + "\n", encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Diagnostics save failed", str(exc))
+            return
+        self.set_status("Diagnostics saved", "Safe diagnostics were saved.")
+
+    def export_settings(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Export portable settings", "Whisper-Anywhere-Settings.json", "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps(self.settings_manager.portable_export(), indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Settings export failed", str(exc))
+            return
+        self.set_status("Settings exported", "Portable settings were exported without personal local paths.")
+
+    def import_settings(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import portable settings", "", "JSON files (*.json)")
+        if not path:
+            return
+        try:
+            values = json.loads(Path(path).read_text(encoding="utf-8"))
+            ignored = self.settings_manager.import_portable(values)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Settings import failed", f"Could not import settings:\n\n{exc}")
+            return
+        self._load_settings_into_ui()
+        self._reset_transcriber()
+        self.shortcut_changed.emit(str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q")), str(self.settings_manager.get("shortcut_mode", "hold")))
+        detail = "Settings imported."
+        if ignored:
+            detail += f" Ignored local/unknown fields: {', '.join(ignored[:6])}."
+        self.set_status("Settings imported", detail)
 
     def update_shortcut_warning(self) -> None:
         if self._is_capturing_shortcut:
