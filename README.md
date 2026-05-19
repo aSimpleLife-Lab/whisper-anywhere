@@ -14,8 +14,6 @@ The easiest way to try Whisper Anywhere is to download the prebuilt Windows rele
 
 **Download latest Windows build:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.0/Whisper-Anywhere-Windows.zip)
 
-This download contains the newest `Whisper Anywhere.exe` with the app icon, feature list dropdown, safer settings dropdowns, and optional start-with-Windows tray launch.
-
 After downloading:
 
 1. Extract `Whisper-Anywhere-Windows.zip`.
@@ -24,6 +22,28 @@ After downloading:
 
 The app downloads Whisper models on first use, so the first launch/model setup can take a little while.
 To launch automatically after reboot, open the app and enable **Start with Windows hidden in the tray** in Core Settings.
+
+## Developer Update Log
+
+<details>
+<summary><strong>Current build</strong> - latest EXE in the download link above</summary>
+
+- Proper native Windows app, taskbar, tray, and EXE icon
+- Feature list dropdown inside the app
+- Safer settings dropdowns that ignore mouse-wheel changes until opened
+- Optional **Start with Windows hidden in the tray**
+
+</details>
+
+<details>
+<summary><strong>v0.1.0</strong> - first public Windows release</summary>
+
+- Reliable hold-to-talk voice typing with `Ctrl + Alt + Q`
+- Local `faster-whisper` transcription with CPU-safe defaults
+- Custom start and stop sounds
+- System tray controls and downloadable Windows build
+
+</details>
 
 ## V1 Features
 
