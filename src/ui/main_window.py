@@ -4,8 +4,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -67,6 +67,189 @@ class SafeComboBox(QComboBox):
         event.ignore()
 
 
+def _qt_key_value(key: Qt.Key) -> int:
+    return int(key.value)
+
+
+QT_TRIGGER_KEYS = {
+    _qt_key_value(Qt.Key.Key_Space): "Space",
+    _qt_key_value(Qt.Key.Key_Return): "Enter",
+    _qt_key_value(Qt.Key.Key_Enter): "Enter",
+    _qt_key_value(Qt.Key.Key_Tab): "Tab",
+    _qt_key_value(Qt.Key.Key_Escape): "Esc",
+    _qt_key_value(Qt.Key.Key_Backspace): "Backspace",
+    _qt_key_value(Qt.Key.Key_Delete): "Delete",
+    _qt_key_value(Qt.Key.Key_Insert): "Insert",
+    _qt_key_value(Qt.Key.Key_Home): "Home",
+    _qt_key_value(Qt.Key.Key_End): "End",
+    _qt_key_value(Qt.Key.Key_PageUp): "PageUp",
+    _qt_key_value(Qt.Key.Key_PageDown): "PageDown",
+    _qt_key_value(Qt.Key.Key_Up): "Up",
+    _qt_key_value(Qt.Key.Key_Down): "Down",
+    _qt_key_value(Qt.Key.Key_Left): "Left",
+    _qt_key_value(Qt.Key.Key_Right): "Right",
+    _qt_key_value(Qt.Key.Key_Semicolon): "Semicolon",
+    _qt_key_value(Qt.Key.Key_Equal): "Equals",
+    _qt_key_value(Qt.Key.Key_Comma): "Comma",
+    _qt_key_value(Qt.Key.Key_Minus): "Minus",
+    _qt_key_value(Qt.Key.Key_Period): "Period",
+    _qt_key_value(Qt.Key.Key_Slash): "Slash",
+    _qt_key_value(Qt.Key.Key_QuoteLeft): "Backtick",
+    _qt_key_value(Qt.Key.Key_BracketLeft): "LeftBracket",
+    _qt_key_value(Qt.Key.Key_Backslash): "Backslash",
+    _qt_key_value(Qt.Key.Key_BracketRight): "RightBracket",
+    _qt_key_value(Qt.Key.Key_Apostrophe): "Quote",
+}
+
+QT_MODIFIER_KEYS = {
+    _qt_key_value(Qt.Key.Key_Control): "Ctrl",
+    _qt_key_value(Qt.Key.Key_Shift): "Shift",
+    _qt_key_value(Qt.Key.Key_Alt): "Alt",
+    _qt_key_value(Qt.Key.Key_Meta): "Win",
+}
+
+
+class ShortcutCaptureInput(QLineEdit):
+    capture_started = Signal()
+    shortcut_captured = Signal(str)
+    capture_cancelled = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._capturing = False
+        self._previous_text = ""
+        self._pressed_tokens: set[str] = set()
+        self._last_tokens: set[str] = set()
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        self.start_capture()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if not self._capturing:
+            self.start_capture()
+        if event.isAutoRepeat():
+            event.accept()
+            return
+        if event.key() == _qt_key_value(Qt.Key.Key_Escape) and not self._modifier_names(event.modifiers()):
+            self.cancel_capture()
+            event.accept()
+            return
+
+        tokens = self._modifier_names(event.modifiers())
+        key_name = self._key_name(event)
+        if key_name:
+            tokens.add(key_name)
+            self._pressed_tokens.add(key_name)
+        for modifier in tokens.intersection({"Ctrl", "Shift", "Alt", "Win"}):
+            self._pressed_tokens.add(modifier)
+
+        if tokens:
+            self._last_tokens = tokens
+            self.setText(self._format_tokens(tokens))
+        else:
+            self.setText("Unsupported key")
+        event.accept()
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if not self._capturing:
+            super().keyReleaseEvent(event)
+            return
+        if not event.isAutoRepeat():
+            key_name = self._key_name(event)
+            if key_name:
+                self._pressed_tokens.discard(key_name)
+            modifier_name = QT_MODIFIER_KEYS.get(event.key())
+            if modifier_name:
+                self._pressed_tokens.discard(modifier_name)
+            if not self._pressed_tokens and self._last_tokens:
+                self.complete_capture()
+        event.accept()
+
+    def focusOutEvent(self, event) -> None:
+        if self._capturing:
+            self.cancel_capture()
+        super().focusOutEvent(event)
+
+    def start_capture(self) -> None:
+        if self._capturing:
+            return
+        self._capturing = True
+        self._previous_text = self.text()
+        self._pressed_tokens.clear()
+        self._last_tokens.clear()
+        self.setReadOnly(True)
+        self.setText("Press shortcut...")
+        self.selectAll()
+        self.capture_started.emit()
+
+    def complete_capture(self) -> None:
+        shortcut = self._format_tokens(self._last_tokens)
+        self._capturing = False
+        self.setReadOnly(False)
+        self.setText(shortcut)
+        self.shortcut_captured.emit(shortcut)
+
+    def cancel_capture(self) -> None:
+        self._capturing = False
+        self._pressed_tokens.clear()
+        self._last_tokens.clear()
+        self.setReadOnly(False)
+        self.setText(self._previous_text)
+        self.capture_cancelled.emit()
+
+    def _modifier_names(self, modifiers) -> set[str]:
+        names: set[str] = set()
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            names.add("Ctrl")
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            names.add("Shift")
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            names.add("Alt")
+        if modifiers & Qt.KeyboardModifier.MetaModifier:
+            names.add("Win")
+        return names
+
+    def _key_name(self, event: QKeyEvent) -> str | None:
+        key = event.key()
+        if key in QT_MODIFIER_KEYS:
+            return QT_MODIFIER_KEYS[key]
+        native_vk = event.nativeVirtualKey()
+        if 0x30 <= native_vk <= 0x39:
+            return chr(native_vk)
+        if 0x41 <= native_vk <= 0x5A:
+            return chr(native_vk)
+        if 0x70 <= native_vk <= 0x7B:
+            return f"F{native_vk - 0x6F}"
+        native_names = {
+            0xBA: "Semicolon",
+            0xBB: "Equals",
+            0xBC: "Comma",
+            0xBD: "Minus",
+            0xBE: "Period",
+            0xBF: "Slash",
+            0xC0: "Backtick",
+            0xDB: "LeftBracket",
+            0xDC: "Backslash",
+            0xDD: "RightBracket",
+            0xDE: "Quote",
+        }
+        if native_vk in native_names:
+            return native_names[native_vk]
+        if _qt_key_value(Qt.Key.Key_A) <= key <= _qt_key_value(Qt.Key.Key_Z):
+            return chr(ord("A") + key - _qt_key_value(Qt.Key.Key_A))
+        if _qt_key_value(Qt.Key.Key_0) <= key <= _qt_key_value(Qt.Key.Key_9):
+            return chr(ord("0") + key - _qt_key_value(Qt.Key.Key_0))
+        if _qt_key_value(Qt.Key.Key_F1) <= key <= _qt_key_value(Qt.Key.Key_F12):
+            return f"F{1 + key - _qt_key_value(Qt.Key.Key_F1)}"
+        return QT_TRIGGER_KEYS.get(key)
+
+    def _format_tokens(self, tokens: set[str]) -> str:
+        ordered = [name for name in ("Ctrl", "Shift", "Alt", "Win") if name in tokens]
+        triggers = sorted(token for token in tokens if token not in {"Ctrl", "Shift", "Alt", "Win"})
+        return "+".join(ordered + triggers)
+
+
 class MainWindow(QMainWindow):
     model_changed = Signal(str)
     shortcut_changed = Signal(str, str)
@@ -98,6 +281,7 @@ class MainWindow(QMainWindow):
         self._is_listening = False
         self._is_transcribing = False
         self._is_preparing_model = False
+        self._is_capturing_shortcut = False
         self._loading_ui = False
         self._transcription_request_id = 0
         self._active_transcription_id = 0
@@ -263,7 +447,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.mic_combo, 1, 1, 1, 3)
 
         layout.addWidget(QLabel("Shortcut"), 2, 0)
-        self.shortcut_input = QLineEdit()
+        self.shortcut_input = ShortcutCaptureInput()
         self.shortcut_input.setPlaceholderText("Ctrl+Alt+Q")
         layout.addWidget(self.shortcut_input, 2, 1)
         self.mode_combo = SafeComboBox()
@@ -407,6 +591,9 @@ class MainWindow(QMainWindow):
         self.prepare_model_button.clicked.connect(lambda checked=False: self.prepare_selected_model(auto=False))
         self.apply_shortcut_button.clicked.connect(lambda checked=False: self.apply_shortcut_settings())
         self.shortcut_input.textChanged.connect(lambda text="": self.update_shortcut_warning())
+        self.shortcut_input.capture_started.connect(self.start_shortcut_capture)
+        self.shortcut_input.shortcut_captured.connect(self.finish_shortcut_capture)
+        self.shortcut_input.capture_cancelled.connect(self.cancel_shortcut_capture)
         self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
         self.insert_method_combo.currentIndexChanged.connect(lambda index=0: self.save_typing_settings())
         self.restore_clipboard_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
@@ -632,6 +819,9 @@ class MainWindow(QMainWindow):
             pass
 
     def start_listening(self) -> None:
+        if self._is_capturing_shortcut:
+            self._append_activity_log("start_listening ignored: shortcut capture active")
+            return
         if self._is_listening or self._is_transcribing:
             self._append_activity_log("start_listening ignored: already listening or transcribing")
             return
@@ -803,6 +993,19 @@ class MainWindow(QMainWindow):
         self.set_status("Ready", f"Shortcut saved: {shortcut}")
         self.set_hotkey_status(f"Shortcut saved: {shortcut}. Watch the hotkey log while testing.")
 
+    def start_shortcut_capture(self) -> None:
+        self._is_capturing_shortcut = True
+        self.set_status("Shortcut capture", "Press the shortcut you want to use. Press Esc to cancel.")
+
+    def finish_shortcut_capture(self, shortcut: str) -> None:
+        self._is_capturing_shortcut = False
+        self.shortcut_input.setText(shortcut)
+        self.apply_shortcut_settings()
+
+    def cancel_shortcut_capture(self) -> None:
+        self._is_capturing_shortcut = False
+        self.set_status("Ready", "Shortcut change cancelled.")
+
     def apply_performance_preset(self) -> None:
         if self._loading_ui:
             return
@@ -923,6 +1126,9 @@ class MainWindow(QMainWindow):
             self.prepare_selected_model(auto=True)
 
     def update_shortcut_warning(self) -> None:
+        if self._is_capturing_shortcut:
+            self.shortcut_warning.setText("")
+            return
         warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Alt+Q")
         self.shortcut_warning.setText(warning)
 

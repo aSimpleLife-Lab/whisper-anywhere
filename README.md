@@ -30,6 +30,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 
 - Proper native Windows app, taskbar, tray, and EXE icon
 - Bundled custom start/stop feedback sounds
+- Click-to-record shortcut selection, including single-key shortcuts
 - Feature list dropdown inside the app
 - Safer settings dropdowns that ignore mouse-wheel changes until opened
 - Optional **Start with Windows hidden in the tray**
@@ -53,7 +54,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - System tray support
 - Global hold-to-talk shortcut: `Ctrl + Alt + Q`
 - Optional toggle shortcut mode
-- Shortcut settings UI
+- Shortcut settings UI with click-to-record shortcut selection
 - Feature list dropdown inside the app
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`

@@ -47,6 +47,21 @@ for digit in "0123456789":
     KEY_NAME_TO_VK[digit] = ord(digit)
 for number in range(1, 13):
     KEY_NAME_TO_VK[f"f{number}"] = 0x6F + number
+KEY_NAME_TO_VK.update(
+    {
+        "semicolon": 0xBA,
+        "equals": 0xBB,
+        "comma": 0xBC,
+        "minus": 0xBD,
+        "period": 0xBE,
+        "slash": 0xBF,
+        "backtick": 0xC0,
+        "leftbracket": 0xDB,
+        "backslash": 0xDC,
+        "rightbracket": 0xDD,
+        "quote": 0xDE,
+    }
+)
 
 DISPLAY_MODIFIER = {
     "ctrl": "Ctrl",
@@ -74,10 +89,40 @@ DISPLAY_TRIGGER_NAMES = {
 }
 for number in range(1, 13):
     DISPLAY_TRIGGER_NAMES[f"f{number}"] = f"F{number}"
+DISPLAY_TRIGGER_NAMES.update(
+    {
+        "semicolon": "Semicolon",
+        "equals": "Equals",
+        "comma": "Comma",
+        "minus": "Minus",
+        "period": "Period",
+        "slash": "Slash",
+        "backtick": "Backtick",
+        "leftbracket": "LeftBracket",
+        "backslash": "Backslash",
+        "rightbracket": "RightBracket",
+        "quote": "Quote",
+    }
+)
+
+CHAR_TRIGGER_ALIASES = {
+    ";": "semicolon",
+    "=": "equals",
+    ",": "comma",
+    "-": "minus",
+    ".": "period",
+    "/": "slash",
+    "`": "backtick",
+    "[": "leftbracket",
+    "\\": "backslash",
+    "]": "rightbracket",
+    "'": "quote",
+}
 
 TRIGGER_TOKEN_ALIASES = {
     "return": "enter",
     "escape": "esc",
+    **CHAR_TRIGGER_ALIASES,
 }
 
 PYNPUT_KEY_TOKENS: dict[object, str] = {}
@@ -142,7 +187,7 @@ class ParsedShortcut:
 
 
 def _normalize_trigger_token(part: str) -> str:
-    token = TRIGGER_TOKEN_ALIASES.get(part, part)
+    token = TRIGGER_TOKEN_ALIASES.get(part.replace(" ", ""), part.replace(" ", ""))
     if token in KEY_NAME_TO_VK:
         return token
     raise ValueError(f"Unsupported shortcut key: {part}")
@@ -207,6 +252,8 @@ def shortcut_warning(shortcut_text: str) -> str:
     }
     if display in common:
         return common[display]
+    if not parsed.modifiers and parsed.trigger_vk is not None:
+        return "Single-key shortcuts can trigger while typing. Use a modifier if it gets in the way."
     if parsed.trigger_vk is None:
         return "Modifier-only shortcuts are unreliable. Ctrl+Alt+Q is recommended."
     if "win" in parsed.modifiers:
@@ -455,7 +502,7 @@ class HotkeyListener(QObject):
             return token
         char = getattr(key, "char", None)
         if isinstance(char, str) and char:
-            return char.lower()
+            return CHAR_TRIGGER_ALIASES.get(char, char.lower())
         vk = getattr(key, "vk", None)
         if isinstance(vk, int):
             if 0x70 <= vk <= 0x7B:
