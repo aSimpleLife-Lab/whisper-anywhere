@@ -2,7 +2,7 @@
 
 Whisper Anywhere is a native Windows 11 desktop app for local Whisper voice typing.
 
-Click in any app, hold `Ctrl + Win + Space`, speak, release, and Whisper Anywhere transcribes your speech locally and pastes the text into the focused Windows app.
+Click in any app, hold `Ctrl + Alt + Q`, speak, release, and Whisper Anywhere transcribes your speech locally and pastes the text into the focused Windows app.
 
 This is not a web app and it does not use a cloud API in V1.
 
@@ -10,7 +10,7 @@ This is not a web app and it does not use a cloud API in V1.
 
 - PySide6 Windows desktop window
 - System tray support
-- Global hold-to-talk shortcut: `Ctrl + Win + Space`
+- Global hold-to-talk shortcut: `Ctrl + Alt + Q`
 - Optional toggle shortcut mode
 - Shortcut settings UI
 - Microphone selection
@@ -34,9 +34,9 @@ After the app is built into an EXE, the user should not need to install Python, 
 3. The app checks the selected Whisper model.
 4. If the model is missing, the app prepares/downloads it automatically when enabled.
 5. Click into any text field or app.
-6. Hold `Ctrl + Win + Space`.
+6. Hold `Ctrl + Alt + Q`.
 7. Speak.
-8. Release `Ctrl + Win + Space`.
+8. Release `Ctrl + Alt + Q`.
 9. Text appears where the cursor was.
 
 ## Performance / Hardware
@@ -51,8 +51,8 @@ Beginner-friendly modes:
 
 Hardware choices:
 
-- `Auto`: uses a compatible CUDA GPU if available, otherwise CPU.
-- `CPU Only`: forces local CPU transcription.
+- `Auto`: uses CPU by default unless GPU use is enabled.
+- `CPU Only`: forces local CPU transcription and is the safest mode.
 - `GPU Preferred`: tries CUDA first, then falls back to CPU when fallback is enabled.
 
 Advanced choices:
@@ -98,12 +98,12 @@ python .\src\main.py
 2. Wait until the selected model says it is ready. The first model preparation can take a while because it downloads model files.
 3. Open Notepad or PowerShell.
 4. Click where text should appear.
-5. Hold `Ctrl + Win + Space`.
+5. Hold `Ctrl + Alt + Q`.
 6. Speak a short sentence.
-7. Release `Ctrl + Win + Space`.
+7. Release `Ctrl + Alt + Q`.
 8. The transcribed text should paste into the app you clicked.
 
-If the Start menu opens while testing the old modifier-only `Ctrl + Win` shortcut, switch back to the default `Ctrl + Win + Space`. You can change the shortcut in the app.
+If a Windows-key shortcut is flaky on your system, switch back to the default `Ctrl + Alt + Q`. You can change the shortcut in the app.
 
 ## Hotkey Diagnostics
 
@@ -115,17 +115,17 @@ Whisper Anywhere writes a hotkey diagnostic log whenever the global hook starts,
 
 The Core Settings section also shows the current hotkey status and the log file path. For reliability testing, compare:
 
-- Default: `Ctrl + Win + Space`
-- Legacy comparison only: `Ctrl + Win`
+- Default: `Ctrl + Alt + Q`
+- Legacy comparison only: `Ctrl + Win + Space`, `Ctrl + Win`
 
-`Ctrl + Win + Space` is the recommended default because it includes a non-modifier trigger key. Modifier-only `Ctrl + Win` can be intercepted by Windows shell behavior before the app sees a clean hold/release sequence.
+`Ctrl + Alt + Q` is the recommended default because it avoids Windows-shell shortcuts while still giving a clean hold/release sequence. Windows-key shortcuts are still available, but they are less reliable across machines.
 
 Developer shortcut test helper:
 
 ```powershell
-.\scripts\test_hotkeys.ps1 -Mode Source -Shortcut Ctrl+Win+Space
+.\scripts\test_hotkeys.ps1 -Mode Source -Shortcut Ctrl+Alt+Q
 .\scripts\test_hotkeys.ps1 -Mode Source -Shortcut Ctrl+Win
-.\scripts\test_hotkeys.ps1 -Mode Exe -Shortcut Ctrl+Win+Space
+.\scripts\test_hotkeys.ps1 -Mode Exe -Shortcut Ctrl+Alt+Q
 .\scripts\test_hotkeys.ps1 -Mode Exe -Shortcut Ctrl+Win
 ```
 
@@ -174,13 +174,14 @@ Temporary recordings are deleted after transcription by default.
 ```json
 {
   "selected_model": "base",
-  "shortcut": "Ctrl+Win+Space",
+  "shortcut": "Ctrl+Alt+Q",
   "shortcut_mode": "hold",
-  "hotkey_default_version": 2,
-  "device": "auto",
-  "compute_type": "auto",
+  "hotkey_default_version": 3,
+  "device": "cpu",
+  "compute_type": "int8",
   "performance_preset": "balanced",
-  "use_gpu_if_available": true,
+  "runtime_default_version": 2,
+  "use_gpu_if_available": false,
   "fallback_to_cpu": true,
   "low_ram_mode": false,
   "low_vram_mode": false,

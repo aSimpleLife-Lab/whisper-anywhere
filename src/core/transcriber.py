@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import wave
 
 from core.model_manager import ModelManager
 
@@ -29,45 +31,77 @@ class Transcriber:
         return self.model_manager.is_model_ready()
 
     def prepare_selected_model(self, settings: dict[str, Any]) -> None:
-        self._load_model(settings)
-        self.model_manager.mark_model_ready()
+        try:
+            self._load_model(settings)
+            self.model_manager.mark_model_ready()
+        finally:
+            self.reset()
 
     def transcribe(self, audio_path: str, settings: dict[str, Any]) -> str:
-        model = self._load_model(settings)
-        kwargs: dict[str, Any] = {
-            "beam_size": 5,
-            "vad_filter": False,
-            "condition_on_previous_text": False,
-        }
-
-        language_mode = str(settings.get("language_mode", "auto"))
-        forced_language = str(settings.get("forced_language", "")).strip()
-        if language_mode == "force" and forced_language:
-            kwargs["language"] = forced_language
-
-        if bool(settings.get("translate_to_english", False)):
-            kwargs["task"] = "translate"
-
+        if self._looks_like_silence(audio_path):
+            self.runtime_message = "No speech was detected above the microphone noise floor."
+            self._model = None
+            self._loaded_key = None
+            return ""
         try:
-            segments, _info = model.transcribe(audio_path, **kwargs)
-            text = " ".join(segment.text.strip() for segment in segments).strip()
-        except Exception as exc:
-            if self._should_retry_on_cpu(settings):
-                try:
-                    fallback_model = self._load_cpu_fallback_model(settings)
-                    segments, _info = fallback_model.transcribe(audio_path, **kwargs)
-                    text = " ".join(segment.text.strip() for segment in segments).strip()
-                except Exception as fallback_exc:
+            model = self._load_model(settings)
+            kwargs: dict[str, Any] = {
+                "beam_size": 5,
+                "vad_filter": False,
+                "condition_on_previous_text": False,
+            }
+
+            language_mode = str(settings.get("language_mode", "auto"))
+            forced_language = str(settings.get("forced_language", "")).strip()
+            if language_mode == "force" and forced_language:
+                kwargs["language"] = forced_language
+
+            if bool(settings.get("translate_to_english", False)):
+                kwargs["task"] = "translate"
+
+            try:
+                segments, _info = model.transcribe(audio_path, **kwargs)
+                text = " ".join(segment.text.strip() for segment in segments).strip()
+            except Exception as exc:
+                if self._should_retry_on_cpu(settings):
+                    try:
+                        fallback_model = self._load_cpu_fallback_model(settings)
+                        segments, _info = fallback_model.transcribe(audio_path, **kwargs)
+                        text = " ".join(segment.text.strip() for segment in segments).strip()
+                    except Exception as fallback_exc:
+                        raise TranscriptionError(
+                            "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
+                        ) from fallback_exc
+                else:
                     raise TranscriptionError(
                         "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
-                    ) from fallback_exc
-            else:
-                raise TranscriptionError(
-                    "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
-                ) from exc
+                    ) from exc
 
-        self.model_manager.mark_model_ready()
-        return " ".join(text.split())
+            self.model_manager.mark_model_ready()
+            return " ".join(text.split())
+        finally:
+            self.reset()
+
+    def reset(self) -> None:
+        self._model = None
+        self._loaded_key = None
+
+    def _looks_like_silence(self, audio_path: str) -> bool:
+        path = Path(audio_path)
+        if path.suffix.lower() != ".wav" or not path.exists():
+            return False
+        try:
+            with wave.open(str(path), "rb") as wav_file:
+                frames = wav_file.readframes(wav_file.getnframes())
+        except (OSError, wave.Error):
+            return False
+        samples = array("h")
+        samples.frombytes(frames)
+        if not samples:
+            return True
+        peak = max(abs(value) for value in samples)
+        avg_abs = sum(abs(value) for value in samples) / len(samples)
+        return peak < 300 and avg_abs < 25
 
     def _load_model(self, settings: dict[str, Any]):
         try:

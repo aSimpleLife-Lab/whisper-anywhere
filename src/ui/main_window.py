@@ -31,16 +31,19 @@ from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import LARGE_MODELS, ModelManager, WhisperModelInfo
 from core.settings_manager import SettingsManager
-from core.text_inserter import TextInserter, TextInsertionError
+from core.text_inserter import TextInserter, TextInsertionError, TextTarget
 from core.transcriber import Transcriber
+
+TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
 
 
 class MainWindow(QMainWindow):
     model_changed = Signal(str)
     shortcut_changed = Signal(str, str)
     level_changed = Signal(float)
-    transcription_done = Signal(str, str)
-    transcription_failed = Signal(str, str)
+    transcription_done = Signal(int, str, str)
+    transcription_failed = Signal(int, str, str)
+    transcription_timeout = Signal(int, str)
     model_ready = Signal(str)
     model_failed = Signal(str)
 
@@ -59,11 +62,14 @@ class MainWindow(QMainWindow):
         self.transcriber = transcriber
         self.text_inserter = text_inserter
         self._force_exit = False
-        self._target_hwnd: int | None = None
+        self._target_hwnd: TextTarget | None = None
         self._is_listening = False
         self._is_transcribing = False
         self._is_preparing_model = False
         self._loading_ui = False
+        self._transcription_request_id = 0
+        self._active_transcription_id = 0
+        self._transcription_timer: threading.Timer | None = None
 
         self.model_buttons: dict[str, QPushButton] = {}
 
@@ -73,7 +79,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._load_settings_into_ui()
         self._apply_styles()
-        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
+        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
         self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
         self.prepare_selected_model(auto=True)
 
@@ -119,7 +125,7 @@ class MainWindow(QMainWindow):
         self.bottom_status = QLabel("Ready")
         self.bottom_model = QLabel("Whisper: base")
         self.bottom_mic = QLabel("Mic: Default system microphone")
-        self.bottom_shortcut = QLabel("Shortcut: Ctrl+Win+Space")
+        self.bottom_shortcut = QLabel("Shortcut: Ctrl+Alt+Q")
         for label in (self.bottom_status, self.bottom_model, self.bottom_mic, self.bottom_shortcut):
             label.setObjectName("bottomLabel")
         bottom.addWidget(self.bottom_status)
@@ -146,14 +152,14 @@ class MainWindow(QMainWindow):
         text_block = QVBoxLayout()
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("statusLabel")
-        self.status_detail = QLabel("Hold Ctrl + Win + Space to talk.")
+        self.status_detail = QLabel("Hold Ctrl + Alt + Q to talk.")
         self.status_detail.setObjectName("mutedLabel")
         self.level_bar = QProgressBar()
         self.level_bar.setRange(0, 100)
         self.level_bar.setValue(0)
         self.level_bar.setTextVisible(False)
         self.level_bar.setFixedHeight(14)
-        self.shortcut_reminder = QLabel("Hold Ctrl + Win + Space to talk")
+        self.shortcut_reminder = QLabel("Hold Ctrl + Alt + Q to talk")
         self.shortcut_reminder.setObjectName("shortcutReminder")
         text_block.addWidget(self.status_label)
         text_block.addWidget(self.status_detail)
@@ -224,7 +230,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("Shortcut"), 2, 0)
         self.shortcut_input = QLineEdit()
-        self.shortcut_input.setPlaceholderText("Ctrl+Win+Space")
+        self.shortcut_input.setPlaceholderText("Ctrl+Alt+Q")
         layout.addWidget(self.shortcut_input, 2, 1)
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Hold to talk", "hold")
@@ -249,7 +255,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Insert method"), 6, 0)
         self.insert_method_combo = QComboBox()
         self.insert_method_combo.addItem("Clipboard paste", "clipboard_paste")
-        self.insert_method_combo.addItem("Simulated keystrokes", "simulated_keystrokes")
         layout.addWidget(self.insert_method_combo, 6, 1)
 
         self.restore_clipboard_checkbox = QCheckBox("Restore previous clipboard after paste")
@@ -326,7 +331,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         steps = [
             "1. Place your cursor where you want text.",
-            "2. Hold Ctrl + Win + Space and speak.",
+            "2. Hold Ctrl + Alt + Q and speak.",
             "3. Release the shortcut.",
             "4. Whisper Anywhere transcribes locally and types the text there.",
         ]
@@ -372,6 +377,7 @@ class MainWindow(QMainWindow):
         self.level_changed.connect(self.update_level)
         self.transcription_done.connect(self.finish_transcription)
         self.transcription_failed.connect(self.fail_transcription)
+        self.transcription_timeout.connect(self.handle_transcription_timeout)
         self.model_ready.connect(self.finish_model_prepare)
         self.model_failed.connect(self.fail_model_prepare)
 
@@ -380,11 +386,10 @@ class MainWindow(QMainWindow):
         self.refresh_microphones()
         selected = self.model_manager.selected_model()
         self._update_model_buttons(selected)
-        self.shortcut_input.setText(str(self.settings_manager.get("shortcut", "Ctrl+Win+Space")))
+        self.shortcut_input.setText(str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q")))
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.mode_combo.setCurrentIndex(0 if mode == "hold" else 1)
-        insert_method = str(self.settings_manager.get("insert_method", "clipboard_paste"))
-        self.insert_method_combo.setCurrentIndex(0 if insert_method == "clipboard_paste" else 1)
+        self.insert_method_combo.setCurrentIndex(0)
         self.restore_clipboard_checkbox.setChecked(bool(self.settings_manager.get("restore_clipboard", True)))
         self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
         self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
@@ -410,12 +415,57 @@ class MainWindow(QMainWindow):
         self.mic_combo.setCurrentIndex(index if index >= 0 else 0)
         self.mic_combo.blockSignals(False)
 
+    def _pipeline_busy(self) -> bool:
+        return self._is_listening or self._is_transcribing or self._is_preparing_model
+
+    def _pipeline_busy_message(self) -> str:
+        return "Wait until the current recording, transcription, or model preparation finishes before changing models or performance settings."
+
+    def _restore_performance_controls(self) -> None:
+        self._loading_ui = True
+        try:
+            self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
+            self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
+            self._select_combo_data(self.compute_combo, self.settings_manager.get("compute_type", "auto"))
+            self._select_combo_data(self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto"))
+            self.low_ram_checkbox.setChecked(bool(self.settings_manager.get("low_ram_mode", False)))
+            self.low_vram_checkbox.setChecked(bool(self.settings_manager.get("low_vram_mode", False)))
+            self.fallback_cpu_checkbox.setChecked(bool(self.settings_manager.get("fallback_to_cpu", True)))
+            self.warn_large_checkbox.setChecked(bool(self.settings_manager.get("warn_before_large_models", True)))
+            self.auto_download_checkbox.setChecked(bool(self.settings_manager.get("auto_download_models", True)))
+            self.use_gpu_checkbox.setChecked(bool(self.settings_manager.get("use_gpu_if_available", True)))
+        finally:
+            self._loading_ui = False
+
+    def _cancel_transcription_timer(self) -> None:
+        if self._transcription_timer is not None:
+            self._transcription_timer.cancel()
+            self._transcription_timer = None
+
+    def _start_transcription_timer(self, request_id: int, audio_path: str) -> None:
+        self._cancel_transcription_timer()
+        timer = threading.Timer(
+            TRANSCRIPTION_TIMEOUT_SECONDS,
+            lambda: self.transcription_timeout.emit(request_id, audio_path),
+        )
+        timer.daemon = True
+        self._transcription_timer = timer
+        timer.start()
+
+    def _reset_transcriber(self) -> None:
+        self.transcriber = Transcriber(self.model_manager)
+
     def select_model(self, model_name: str) -> None:
+        if self._pipeline_busy():
+            self._update_model_buttons(self.model_manager.selected_model())
+            self.set_status("Busy", self._pipeline_busy_message())
+            return
         normalized = self.model_manager.normalize_model_name(model_name)
         if normalized != self.model_manager.selected_model() and not self._confirm_model_choice(normalized):
             self._update_model_buttons(self.model_manager.selected_model())
             return
         self.model_manager.select_model(normalized)
+        self._reset_transcriber()
         self._update_model_buttons(normalized)
         self.update_bottom_labels()
         self.model_changed.emit(normalized)
@@ -459,6 +509,10 @@ class MainWindow(QMainWindow):
 
     def prepare_selected_model(self, auto: bool) -> None:
         if self._is_preparing_model:
+            return
+        if self._is_listening or self._is_transcribing:
+            if not auto:
+                self.set_status("Busy", self._pipeline_busy_message())
             return
         selected = self.model_manager.selected_model()
         if self.model_manager.is_model_ready():
@@ -506,7 +560,7 @@ class MainWindow(QMainWindow):
             self.set_status("Ready", message)
         else:
             self.model_status.setText(f"Model ready: {model_name}")
-            shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
+            shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
             self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
 
     def fail_model_prepare(self, message: str) -> None:
@@ -521,22 +575,40 @@ class MainWindow(QMainWindow):
         else:
             self.start_listening()
 
+    def _append_activity_log(self, message: str) -> None:
+        log_path = self.settings_manager.config_dir / "activity.log"
+        try:
+            with log_path.open("a", encoding="utf-8") as file:
+                file.write(f"{message}\n")
+        except OSError:
+            pass
+
     def start_listening(self) -> None:
         if self._is_listening or self._is_transcribing:
+            self._append_activity_log("start_listening ignored: already listening or transcribing")
             return
         if self._is_preparing_model:
+            self._append_activity_log("start_listening blocked: model still preparing")
             self.set_status("Preparing", "The Whisper model is still being prepared. Try again when it says Ready.")
             return
         if not self.model_manager.is_model_ready():
+            self._append_activity_log("start_listening triggered model prepare")
             self.prepare_selected_model(auto=True)
             self.set_status("Preparing", "Preparing the selected Whisper model first.")
             return
 
         microphone_id = self.mic_combo.currentData() or "default"
-        self._target_hwnd = self.text_inserter.get_foreground_window()
+        current_target = self.text_inserter.get_foreground_window()
+        own_window_hwnd = int(self.winId())
+        if current_target and current_target.window_hwnd != own_window_hwnd:
+            self._target_hwnd = current_target
+        else:
+            self._target_hwnd = None
+        self._append_activity_log(f"start_listening target={self._target_hwnd} microphone={microphone_id}")
         try:
             self.audio_recorder.start(str(microphone_id), self.level_changed.emit)
         except AudioRecorderError as exc:
+            self._append_activity_log(f"audio_recorder.start failed: {exc}")
             self.set_status("Error", str(exc))
             return
 
@@ -544,23 +616,39 @@ class MainWindow(QMainWindow):
         self.mic_button.setText("STOP")
         self.set_status("Listening", "Speak clearly. Release the shortcut to transcribe and type.")
 
-    def stop_listening_and_transcribe(self) -> None:
+    def stop_listening_and_transcribe(self, release_window_hwnd: object = None) -> None:
         if not self._is_listening:
+            self._append_activity_log("stop_listening ignored: not listening")
             return
         self._is_listening = False
         self.mic_button.setText("MIC")
         self.level_bar.setValue(0)
+        try:
+            release_window = int(release_window_hwnd) if release_window_hwnd is not None else None
+        except (TypeError, ValueError):
+            release_window = None
+        if release_window:
+            captured_target = self.text_inserter.get_window_target(release_window)
+            if captured_target is not None:
+                self._target_hwnd = captured_target
+        self._append_activity_log(f"stop_listening release_window={release_window} target={self._target_hwnd}")
 
         try:
             audio_path = self.audio_recorder.stop()
         except AudioRecorderError as exc:
+            self._append_activity_log(f"audio_recorder.stop failed: {exc}")
             self.set_status("Error", str(exc))
             return
 
         self._is_transcribing = True
+        self._transcription_request_id += 1
+        request_id = self._transcription_request_id
+        self._active_transcription_id = request_id
+        self._append_activity_log(f"audio captured: {audio_path}")
         self.set_status("Transcribing", "Local Whisper is turning your speech into text.")
         settings = self.settings_manager.all()
-        threading.Thread(target=self._transcribe_worker, args=(audio_path, settings), daemon=True).start()
+        self._start_transcription_timer(request_id, audio_path)
+        threading.Thread(target=self._transcribe_worker, args=(request_id, audio_path, settings), daemon=True).start()
 
     def cancel_listening(self) -> None:
         if not self._is_listening:
@@ -568,38 +656,77 @@ class MainWindow(QMainWindow):
         self._is_listening = False
         self.mic_button.setText("MIC")
         self.audio_recorder.cancel()
+        self._append_activity_log("recording cancelled")
         self.level_bar.setValue(0)
         self.set_status("Ready", "Recording cancelled.")
 
-    def _transcribe_worker(self, audio_path: str, settings: dict[str, Any]) -> None:
+    def _transcribe_worker(self, request_id: int, audio_path: str, settings: dict[str, Any]) -> None:
+        self._append_activity_log(f"transcribe_worker start: id={request_id} path={audio_path}")
         try:
             text = self.transcriber.transcribe(audio_path, settings)
         except Exception as exc:
-            self.transcription_failed.emit(str(exc), audio_path)
+            self._append_activity_log(f"transcribe_worker failed: id={request_id} error={exc}")
+            self.transcription_failed.emit(request_id, str(exc), audio_path)
         else:
-            self.transcription_done.emit(text, audio_path)
+            self._append_activity_log(f"transcribe_worker success: id={request_id} text={text!r}")
+            self.transcription_done.emit(request_id, text, audio_path)
 
-    def finish_transcription(self, text: str, audio_path: str) -> None:
+    def finish_transcription(self, request_id: int, text: str, audio_path: str) -> None:
+        if request_id != self._active_transcription_id:
+            self._append_activity_log(f"finish_transcription ignored stale id={request_id}")
+            self._delete_temp_audio(audio_path)
+            return
+        self._cancel_transcription_timer()
+        self._active_transcription_id = 0
         self._is_transcribing = False
         self._delete_temp_audio(audio_path)
+        self._append_activity_log(f"finish_transcription id={request_id} text={text!r} target={self._target_hwnd}")
         self.last_transcript.setPlainText(text)
         if not text:
+            self._append_activity_log("finish_transcription no speech detected")
             self.set_status("Ready", "No speech was detected. Try speaking closer to the microphone.")
+            self._target_hwnd = None
             return
 
         self.set_status("Typing", "Typing into the focused Windows app.")
         try:
             self.text_inserter.insert_text(text, self._target_hwnd, self.settings_manager.all())
         except TextInsertionError as exc:
+            self._append_activity_log(f"text insertion failed: {exc}")
             self.set_status("Error", str(exc))
+            self._target_hwnd = None
             return
+        self._append_activity_log("text insertion completed")
         detail = self.transcriber.runtime_message or "Done. Click anywhere and use the shortcut again."
         self.set_status("Ready", detail)
+        self._target_hwnd = None
 
-    def fail_transcription(self, message: str, audio_path: str) -> None:
+    def fail_transcription(self, request_id: int, message: str, audio_path: str) -> None:
+        if request_id != self._active_transcription_id:
+            self._append_activity_log(f"fail_transcription ignored stale id={request_id}: {message}")
+            self._delete_temp_audio(audio_path)
+            return
+        self._cancel_transcription_timer()
+        self._active_transcription_id = 0
         self._is_transcribing = False
         self._delete_temp_audio(audio_path)
+        self._append_activity_log(f"fail_transcription id={request_id}: {message}")
         self.set_status("Error", message)
+        self._target_hwnd = None
+
+    def handle_transcription_timeout(self, request_id: int, audio_path: str) -> None:
+        if request_id != self._active_transcription_id or not self._is_transcribing:
+            return
+        self._cancel_transcription_timer()
+        self._active_transcription_id = 0
+        self._is_transcribing = False
+        self._target_hwnd = None
+        self._append_activity_log(f"transcription timeout id={request_id} path={audio_path}")
+        self._reset_transcriber()
+        self.set_status(
+            "Error",
+            "Transcription took too long, so Whisper Anywhere reset the speech engine. Try again or switch to CPU / a smaller model.",
+        )
 
     def _delete_temp_audio(self, audio_path: str) -> None:
         if not bool(self.settings_manager.get("delete_temp_audio", True)):
@@ -610,7 +737,7 @@ class MainWindow(QMainWindow):
             pass
 
     def apply_shortcut_settings(self) -> None:
-        shortcut = self.shortcut_input.text().strip() or "Ctrl+Win+Space"
+        shortcut = self.shortcut_input.text().strip() or "Ctrl+Alt+Q"
         try:
             parse_shortcut(shortcut)
         except ValueError as exc:
@@ -631,40 +758,49 @@ class MainWindow(QMainWindow):
     def apply_performance_preset(self) -> None:
         if self._loading_ui:
             return
+        if self._pipeline_busy():
+            self._restore_performance_controls()
+            self.set_status("Busy", self._pipeline_busy_message())
+            return
         preset = str(self.performance_combo.currentData() or "balanced")
         model_hint = None
         self._loading_ui = True
         try:
             if preset == "fast":
                 model_hint = "base"
-                self._select_combo_data(self.device_combo, "auto")
-                self._select_combo_data(self.compute_combo, "auto")
+                self._select_combo_data(self.device_combo, "cpu")
+                self._select_combo_data(self.compute_combo, "int8")
                 self.low_ram_checkbox.setChecked(False)
                 self.low_vram_checkbox.setChecked(False)
+                self.use_gpu_checkbox.setChecked(False)
             elif preset == "balanced":
                 model_hint = "base"
-                self._select_combo_data(self.device_combo, "auto")
-                self._select_combo_data(self.compute_combo, "auto")
+                self._select_combo_data(self.device_combo, "cpu")
+                self._select_combo_data(self.compute_combo, "int8")
                 self.low_ram_checkbox.setChecked(False)
                 self.low_vram_checkbox.setChecked(False)
+                self.use_gpu_checkbox.setChecked(False)
             elif preset == "accurate":
                 model_hint = "medium"
-                self._select_combo_data(self.device_combo, "auto")
-                self._select_combo_data(self.compute_combo, "auto")
+                self._select_combo_data(self.device_combo, "cpu")
+                self._select_combo_data(self.compute_combo, "int8")
                 self.low_ram_checkbox.setChecked(False)
                 self.low_vram_checkbox.setChecked(False)
+                self.use_gpu_checkbox.setChecked(False)
             elif preset == "low_ram":
                 model_hint = "base"
                 self._select_combo_data(self.device_combo, "cpu")
                 self._select_combo_data(self.compute_combo, "int8")
                 self.low_ram_checkbox.setChecked(True)
                 self.low_vram_checkbox.setChecked(False)
+                self.use_gpu_checkbox.setChecked(False)
             elif preset == "low_vram":
                 model_hint = "small"
-                self._select_combo_data(self.device_combo, "auto")
-                self._select_combo_data(self.compute_combo, "int8_float16")
+                self._select_combo_data(self.device_combo, "cpu")
+                self._select_combo_data(self.compute_combo, "int8")
                 self.low_ram_checkbox.setChecked(False)
                 self.low_vram_checkbox.setChecked(True)
+                self.use_gpu_checkbox.setChecked(False)
         finally:
             self._loading_ui = False
 
@@ -673,7 +809,10 @@ class MainWindow(QMainWindow):
             self.select_model(model_hint)
         else:
             self.prepare_selected_model(auto=True)
-        self.set_status("Ready", f"Performance mode saved: {self.performance_combo.currentText()}")
+        if self._is_preparing_model:
+            self.set_status("Preparing", f"Applying {self.performance_combo.currentText()} mode and preparing the model.")
+        else:
+            self.set_status("Ready", f"Performance mode saved: {self.performance_combo.currentText()}")
 
     def save_microphone_setting(self) -> None:
         if self._loading_ui:
@@ -695,6 +834,10 @@ class MainWindow(QMainWindow):
     def save_performance_settings(self, prepare: bool = True) -> None:
         if self._loading_ui:
             return
+        if self._pipeline_busy():
+            self._restore_performance_controls()
+            self.set_status("Busy", self._pipeline_busy_message())
+            return
         self.settings_manager.update(
             {
                 "performance_preset": str(self.performance_combo.currentData() or "balanced"),
@@ -709,12 +852,13 @@ class MainWindow(QMainWindow):
                 "use_gpu_if_available": self.use_gpu_checkbox.isChecked(),
             }
         )
+        self._reset_transcriber()
         self.update_bottom_labels()
         if prepare and self.auto_download_checkbox.isChecked():
             self.prepare_selected_model(auto=True)
 
     def update_shortcut_warning(self) -> None:
-        warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Win+Space")
+        warning = shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Alt+Q")
         self.shortcut_warning.setText(warning)
 
     def update_level(self, level: float) -> None:
@@ -736,7 +880,7 @@ class MainWindow(QMainWindow):
     def update_bottom_labels(self) -> None:
         model = self.model_manager.selected_model()
         mic_name = self.mic_combo.currentText() or "Default system microphone"
-        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Win+Space"))
+        shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
         device = str(self.settings_manager.get("device", "auto"))
         self.bottom_model.setText(f"Whisper: {model} ({device})")
         self.bottom_mic.setText(f"Mic: {mic_name}")

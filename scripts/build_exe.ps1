@@ -28,6 +28,9 @@ Write-Host "Building Whisper Anywhere.exe..."
     --collect-all av `
     --collect-all sounddevice `
     --hidden-import win32timezone `
+    --hidden-import pynput `
+    --hidden-import pynput.keyboard._win32 `
+    --hidden-import pynput.mouse._win32 `
     "src\main.py"
 
 Write-Host ""

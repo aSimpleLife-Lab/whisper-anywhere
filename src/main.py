@@ -32,7 +32,7 @@ def main() -> int:
     window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter)
     tray = TrayManager(model_manager)
     hotkey = HotkeyListener(
-        str(settings_manager.get("shortcut", "Ctrl+Win+Space")),
+        str(settings_manager.get("shortcut", "Ctrl+Alt+Q")),
         str(settings_manager.get("shortcut_mode", "hold")),
         log_path=settings_manager.hotkey_log_path,
     )

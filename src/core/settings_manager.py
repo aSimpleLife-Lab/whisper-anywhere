@@ -30,16 +30,17 @@ def default_model_path() -> str:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "selected_model": "base",
     "microphone_device": "default",
-    "shortcut": "Ctrl+Win+Space",
+    "shortcut": "Ctrl+Alt+Q",
     "shortcut_mode": "hold",
-    "hotkey_default_version": 2,
+    "hotkey_default_version": 3,
     "cancel_shortcut": "Esc",
     "insert_method": "clipboard_paste",
     "restore_clipboard": True,
-    "device": "auto",
-    "compute_type": "auto",
+    "device": "cpu",
+    "compute_type": "int8",
     "performance_preset": "balanced",
-    "use_gpu_if_available": True,
+    "runtime_default_version": 2,
+    "use_gpu_if_available": False,
     "fallback_to_cpu": True,
     "low_ram_mode": False,
     "low_vram_mode": False,
@@ -157,9 +158,23 @@ class SettingsManager:
 
     def _migrate_settings(self, loaded: dict[str, Any]) -> dict[str, Any]:
         migrated = dict(loaded)
-        if migrated.get("hotkey_default_version") is None and str(migrated.get("shortcut", "")).lower().replace(" ", "") == "ctrl+win":
+        shortcut_value = str(migrated.get("shortcut", "")).lower().replace(" ", "")
+        hotkey_version = int(migrated.get("hotkey_default_version") or 0)
+        if hotkey_version < 2 and shortcut_value == "ctrl+win":
             migrated["shortcut"] = "Ctrl+Win+Space"
-            migrated["hotkey_default_version"] = 2
+            hotkey_version = 2
+        if hotkey_version < 3 and shortcut_value in {"", "ctrl+win", "ctrl+win+space", "ctrl+alt+q"}:
+            migrated["shortcut"] = "Ctrl+Alt+Q"
+            hotkey_version = 3
+        if hotkey_version:
+            migrated["hotkey_default_version"] = hotkey_version
+        runtime_version = int(migrated.get("runtime_default_version") or 0)
+        if runtime_version < 2:
+            if str(migrated.get("device", "auto")) == "auto" and bool(migrated.get("use_gpu_if_available", True)):
+                migrated["device"] = "cpu"
+                migrated["compute_type"] = "int8"
+                migrated["use_gpu_if_available"] = False
+            migrated["runtime_default_version"] = 2
         if "auto_download_models" not in migrated and "auto_download_model" in migrated:
             migrated["auto_download_models"] = bool(migrated.get("auto_download_model"))
         if "device" not in migrated and "use_gpu" in migrated:
@@ -178,6 +193,8 @@ class SettingsManager:
             normalized["compute_type"] = "auto"
         if normalized.get("performance_preset") not in {"fast", "balanced", "accurate", "low_ram", "low_vram"}:
             normalized["performance_preset"] = "balanced"
+        if normalized.get("insert_method") != "clipboard_paste":
+            normalized["insert_method"] = "clipboard_paste"
         cpu_threads = normalized.get("cpu_threads", "auto")
         if cpu_threads != "auto":
             try:
