@@ -27,6 +27,7 @@ Write-Host "Building Whisper Anywhere.exe..."
     --collect-all ctranslate2 `
     --collect-all av `
     --collect-all sounddevice `
+    --collect-all PySide6.QtMultimedia `
     --hidden-import win32timezone `
     --hidden-import pynput `
     --hidden-import pynput.keyboard._win32 `

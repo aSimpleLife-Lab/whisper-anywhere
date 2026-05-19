@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import ctypes
 import os
 import threading
-import winsound
-from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,12 +21,6 @@ except Exception:  # pragma: no cover - dependency missing at runtime
 WATCHDOG_SECONDS = 60.0
 DEFAULT_START_SOUND_PATH = r"C:\Users\Ben\Downloads\startsound.mp3"
 DEFAULT_STOP_SOUND_PATH = r"C:\Users\Ben\Downloads\stopsound.mp3"
-
-winmm = ctypes.WinDLL("winmm", use_last_error=True)
-winmm.mciSendStringW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.UINT, wintypes.HANDLE)
-winmm.mciSendStringW.restype = wintypes.DWORD
-winmm.mciGetErrorStringW.argtypes = (wintypes.DWORD, wintypes.LPWSTR, wintypes.UINT)
-winmm.mciGetErrorStringW.restype = wintypes.BOOL
 
 KEY_NAME_TO_VK = {
     "space": 0x20,
@@ -235,6 +226,7 @@ class HotkeyListener(QObject):
     released = Signal(object)
     cancelled = Signal()
     error = Signal(str)
+    feedback = Signal(bool)
     status = Signal(str)
 
     def __init__(
@@ -261,9 +253,6 @@ class HotkeyListener(QObject):
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
         self._log_lock = threading.Lock()
-        self._sound_lock = threading.Lock()
-        self._sound_generation = 0
-        self._current_sound_alias: str | None = None
         self._log_failed = False
 
     def start(self) -> None:
@@ -479,68 +468,8 @@ class HotkeyListener(QObject):
         return None
 
     def _play_feedback(self, active: bool) -> None:
-        threading.Thread(target=self._play_feedback_worker, args=(active,), name="WhisperAnywhereFeedback", daemon=True).start()
-
-    def _play_feedback_worker(self, active: bool) -> None:
-        sound_path = self.start_sound_path if active else self.stop_sound_path
-        if sound_path and sound_path.exists():
-            try:
-                self._play_sound_file(sound_path)
-                self._log(f"Feedback sound file started: {'start' if active else 'stop'} path={sound_path}")
-                return
-            except RuntimeError as exc:
-                self._log(f"Feedback sound file failed: {exc}")
-
-        try:
-            alias = "SystemAsterisk" if active else "SystemExclamation"
-            winsound.PlaySound(alias, winsound.SND_ALIAS | winsound.SND_ASYNC)
-            self._log(f"Feedback sound requested: {'start' if active else 'stop'}")
-            return
-        except RuntimeError as exc:
-            self._log(f"Feedback alias failed: {exc}")
-        try:
-            winsound.MessageBeep(winsound.MB_ICONASTERISK if active else winsound.MB_ICONEXCLAMATION)
-            self._log(f"Feedback message beep requested: {'start' if active else 'stop'}")
-        except RuntimeError as exc:
-            self._log(f"Feedback sound failed: {exc}")
-
-    def _play_sound_file(self, sound_path: Path) -> None:
-        with self._sound_lock:
-            if self._current_sound_alias:
-                winmm.mciSendStringW(f"stop {self._current_sound_alias}", None, 0, None)
-                winmm.mciSendStringW(f"close {self._current_sound_alias}", None, 0, None)
-                self._current_sound_alias = None
-
-            self._sound_generation += 1
-            generation = self._sound_generation
-            alias = f"whisper_feedback_{generation}"
-
-            path_text = str(sound_path)
-            open_result = winmm.mciSendStringW(f'open "{path_text}" type mpegvideo alias {alias}', None, 0, None)
-            if open_result:
-                raise RuntimeError(self._mci_error(open_result))
-            play_result = winmm.mciSendStringW(f"play {alias}", None, 0, None)
-            if play_result:
-                winmm.mciSendStringW(f"close {alias}", None, 0, None)
-                raise RuntimeError(self._mci_error(play_result))
-            self._current_sound_alias = alias
-
-        close_timer = threading.Timer(10.0, self._close_sound_alias, args=(alias, generation))
-        close_timer.daemon = True
-        close_timer.start()
-
-    def _close_sound_alias(self, alias: str, generation: int) -> None:
-        with self._sound_lock:
-            if self._sound_generation != generation or self._current_sound_alias != alias:
-                return
-            winmm.mciSendStringW(f"close {alias}", None, 0, None)
-            self._current_sound_alias = None
-
-    def _mci_error(self, error_code: int) -> str:
-        buffer = ctypes.create_unicode_buffer(256)
-        if winmm.mciGetErrorStringW(error_code, buffer, len(buffer)):
-            return buffer.value
-        return f"MCI error {error_code}"
+        self._log(f"Feedback requested: {'start' if active else 'stop'}")
+        self.feedback.emit(active)
 
     def _log(self, message: str) -> None:
         try:

@@ -6,6 +6,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from core.audio_recorder import AudioRecorder
+from core.feedback_player import FeedbackPlayer
 from core.hotkey_listener import HotkeyListener
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
@@ -28,6 +29,10 @@ def main() -> int:
     audio_recorder = AudioRecorder()
     transcriber = Transcriber(model_manager)
     text_inserter = TextInserter()
+    feedback_player = FeedbackPlayer(
+        settings_manager.get("start_sound_path", r"C:\Users\Ben\Downloads\startsound.mp3"),
+        settings_manager.get("stop_sound_path", r"C:\Users\Ben\Downloads\stopsound.mp3"),
+    )
 
     window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter)
     tray = TrayManager(model_manager)
@@ -42,6 +47,7 @@ def main() -> int:
     hotkey.pressed.connect(window.start_listening)
     hotkey.released.connect(window.stop_listening_and_transcribe)
     hotkey.cancelled.connect(window.cancel_listening)
+    hotkey.feedback.connect(feedback_player.play)
     hotkey.status.connect(window.set_hotkey_status)
     hotkey.error.connect(window.show_hotkey_error)
     window.shortcut_changed.connect(hotkey.update_shortcut)
