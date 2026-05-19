@@ -4,6 +4,7 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from core.app_icon import app_icon
 from core.model_manager import ModelManager
 
 
@@ -83,6 +84,9 @@ class TrayManager(QObject):
             self.open_requested.emit()
 
     def _make_icon(self) -> QIcon:
+        icon = app_icon()
+        if not icon.isNull():
+            return icon
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)

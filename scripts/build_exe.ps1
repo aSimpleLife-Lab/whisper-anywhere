@@ -22,7 +22,9 @@ Write-Host "Building Whisper Anywhere.exe..."
     --windowed `
     --onedir `
     --name "Whisper Anywhere" `
+    --icon "assets\icon.ico" `
     --paths "src" `
+    --add-data "assets\icon.ico;assets" `
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
     --collect-all av `

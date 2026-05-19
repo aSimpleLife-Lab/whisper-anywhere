@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
-from ctypes import windll
+from ctypes import c_wchar_p, windll
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
 from core.feedback_player import FeedbackPlayer
 from core.hotkey_listener import HotkeyListener
@@ -21,9 +22,12 @@ from ui.main_window import MainWindow
 
 def should_start_minimized() -> bool:
     flags = {"--minimized", "--hidden", "/minimized", "/tray"}
-    if flags.intersection(arg.lower() for arg in sys.argv[1:]):
+    if flags.intersection(str(arg).lower() for arg in sys.argv[1:]):
         return True
-    return any(flag in windll.kernel32.GetCommandLineW().lower() for flag in flags)
+    get_command_line = windll.kernel32.GetCommandLineW
+    get_command_line.restype = c_wchar_p
+    command_line = get_command_line() or ""
+    return any(flag in command_line.lower() for flag in flags)
 
 
 def main() -> int:
@@ -33,6 +37,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Whisper Anywhere")
     app.setOrganizationName("Whisper Anywhere")
+    app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 
     settings_manager = SettingsManager()

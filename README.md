@@ -26,10 +26,12 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 ## V1 Features
 
 - PySide6 Windows desktop window
+- Proper app, tray, and EXE icon
 - System tray support
 - Global hold-to-talk shortcut: `Ctrl + Alt + Q`
 - Optional toggle shortcut mode
 - Shortcut settings UI
+- Feature list dropdown inside the app
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
 - Whisper model selector: `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3`, `turbo`

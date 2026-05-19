@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import LARGE_MODELS, ModelManager, WhisperModelInfo
@@ -36,6 +37,26 @@ from core.text_inserter import TextInserter, TextInsertionError, TextTarget
 from core.transcriber import Transcriber
 
 TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
+FEATURE_ITEMS = [
+    "Windows desktop app",
+    "System tray support",
+    "Global hold-to-talk shortcut: Ctrl + Alt + Q",
+    "Optional toggle shortcut mode",
+    "Shortcut settings UI",
+    "Microphone selection",
+    "Local settings file in AppData",
+    "Whisper model selector",
+    "Model cards with install/download status",
+    "Performance and hardware controls",
+    "Local transcription with faster-whisper",
+    "Clipboard paste insertion into the focused app",
+    "Restore previous clipboard after paste",
+    "Start with Windows hidden in the tray",
+    "Safe dropdowns that do not change while scrolling the page",
+    "Automatic local folder creation",
+    "Automatic selected-model preparation/download",
+    "Clean shutdown of tray, hotkey listener, and microphone",
+]
 
 
 class SafeComboBox(QComboBox):
@@ -85,6 +106,7 @@ class MainWindow(QMainWindow):
         self.model_buttons: dict[str, QPushButton] = {}
 
         self.setWindowTitle("Whisper Anywhere")
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(1080, 780)
         self._build_ui()
         self._connect_signals()
@@ -353,6 +375,15 @@ class MainWindow(QMainWindow):
             label = QLabel(step)
             label.setObjectName("stepLabel")
             layout.addWidget(label)
+        feature_row = QHBoxLayout()
+        feature_label = QLabel("Feature list")
+        self.features_combo = SafeComboBox()
+        self.features_combo.addItem("Open to view all app features")
+        for feature in FEATURE_ITEMS:
+            self.features_combo.addItem(feature)
+        feature_row.addWidget(feature_label)
+        feature_row.addWidget(self.features_combo, 1)
+        layout.addLayout(feature_row)
         return group
 
     def _build_output_panel(self) -> QWidget:
