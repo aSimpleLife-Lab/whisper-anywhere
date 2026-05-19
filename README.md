@@ -307,4 +307,6 @@ Check internet access, available disk space, and permissions for `%LOCALAPPDATA%
 
 ## Disclaimer
 
-I used AI coding tools as part of the workflow, but I’m maintaining, testing, and releasing the project myself.
+| **Disclaimer** |
+| --- |
+| **I used AI coding tools as part of the workflow, but I’m maintaining, testing, and releasing the project myself.** |
