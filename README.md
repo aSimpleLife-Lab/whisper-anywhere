@@ -12,7 +12,9 @@ This is not a web app and it does not use a cloud API in V1.
 
 The easiest way to try Whisper Anywhere is to download the prebuilt Windows release:
 
-**Download:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.0/Whisper-Anywhere-Windows.zip)
+**Download latest Windows build:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.0/Whisper-Anywhere-Windows.zip)
+
+This download contains the newest `Whisper Anywhere.exe` with the app icon, feature list dropdown, safer settings dropdowns, and optional start-with-Windows tray launch.
 
 After downloading:
 
