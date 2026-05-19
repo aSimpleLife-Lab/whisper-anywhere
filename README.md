@@ -305,6 +305,8 @@ Use `Auto` or `CPU Only`, or keep `Fall back to CPU if GPU fails` enabled. GPU t
 
 Check internet access, available disk space, and permissions for `%LOCALAPPDATA%\Whisper Anywhere\models`.
 
+## Disclaimer
+
 <table>
 <tr>
 <td><strong>I used AI coding tools as part of the workflow, but I’m maintaining, testing, and releasing the project myself.</strong></td>
