@@ -6,6 +6,20 @@ Click in any app, hold `Ctrl + Alt + Q`, speak, release, and Whisper Anywhere tr
 
 This is not a web app and it does not use a cloud API in V1.
 
+## Download the Windows EXE
+
+The easiest way to try Whisper Anywhere is to download the prebuilt Windows release:
+
+**Download:** [Whisper-Anywhere-Windows.zip](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.1.0/Whisper-Anywhere-Windows.zip)
+
+After downloading:
+
+1. Extract `Whisper-Anywhere-Windows.zip`.
+2. Open the extracted `Whisper Anywhere` folder.
+3. Run `Whisper Anywhere.exe`.
+
+The app downloads Whisper models on first use, so the first launch/model setup can take a little while.
+
 ## V1 Features
 
 - PySide6 Windows desktop window
@@ -69,8 +83,8 @@ These steps are only for building or developing the app from the GitHub source c
 ### 1. Clone the repo
 
 ```powershell
-git clone https://github.com/aSimpleLife-Lab/whisper-app.git
-cd whisper-app
+git clone https://github.com/aSimpleLife-Lab/whisper-anywhere.git
+cd whisper-anywhere
 ```
 
 ### 2. Create a virtual environment
