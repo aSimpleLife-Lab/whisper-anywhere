@@ -2,9 +2,9 @@
 
 # Whisper Anywhere
 
-Whisper Anywhere is a native Windows 11 desktop app for local Whisper voice typing.
+Whisper Anywhere is an early V1 native Windows 11 desktop/tray app for local voice typing. It uses `faster-whisper` to transcribe speech on your PC, then pastes the result into the app you were using.
 
-Click in any app, hold `Ctrl + Alt + Q`, speak, release, and Whisper Anywhere transcribes your speech locally and pastes the text into the focused Windows app.
+Click in any app, hold `Ctrl + Alt + Q`, speak, release, and Whisper Anywhere transcribes your speech locally with the selected Whisper model.
 
 This is not a web app and it does not use a cloud API in V1.
 
@@ -95,6 +95,8 @@ After the app is built into an EXE, the user should not need to install Python, 
 9. Text appears where the cursor was.
 
 ## Performance / Hardware
+
+Whisper Anywhere includes model selection plus CPU/GPU controls so you can choose speed, accuracy, and hardware behavior for your PC.
 
 Beginner-friendly modes:
 
@@ -215,6 +217,14 @@ The script reuses `dist\Whisper Anywhere\Whisper Anywhere.exe` and creates `dist
 ## Versioning
 
 The in-app version lives in `src\core\app_version.py`. Keep it aligned with this Developer Update Log and the GitHub release tag when preparing a public release.
+
+## License
+
+Whisper Anywhere is released under the [MIT License](LICENSE).
+
+## AI Assistance
+
+This project was built with assistance from AI coding tools, with final testing and release decisions handled by the maintainer.
 
 ## Local Files
 
