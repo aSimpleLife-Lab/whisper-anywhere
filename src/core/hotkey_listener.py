@@ -261,6 +261,9 @@ class HotkeyListener(QObject):
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
         self._log_lock = threading.Lock()
+        self._sound_lock = threading.Lock()
+        self._sound_generation = 0
+        self._current_sound_alias: str | None = None
         self._log_failed = False
 
     def start(self) -> None:
@@ -483,7 +486,7 @@ class HotkeyListener(QObject):
         if sound_path and sound_path.exists():
             try:
                 self._play_sound_file(sound_path)
-                self._log(f"Feedback sound file played: {'start' if active else 'stop'} path={sound_path}")
+                self._log(f"Feedback sound file started: {'start' if active else 'stop'} path={sound_path}")
                 return
             except RuntimeError as exc:
                 self._log(f"Feedback sound file failed: {exc}")
@@ -502,17 +505,36 @@ class HotkeyListener(QObject):
             self._log(f"Feedback sound failed: {exc}")
 
     def _play_sound_file(self, sound_path: Path) -> None:
-        alias = f"whisper_feedback_{threading.get_ident()}_{id(sound_path)}"
-        path_text = str(sound_path)
-        open_result = winmm.mciSendStringW(f'open "{path_text}" type mpegvideo alias {alias}', None, 0, None)
-        if open_result:
-            raise RuntimeError(self._mci_error(open_result))
-        try:
-            play_result = winmm.mciSendStringW(f"play {alias} wait", None, 0, None)
+        with self._sound_lock:
+            if self._current_sound_alias:
+                winmm.mciSendStringW(f"stop {self._current_sound_alias}", None, 0, None)
+                winmm.mciSendStringW(f"close {self._current_sound_alias}", None, 0, None)
+                self._current_sound_alias = None
+
+            self._sound_generation += 1
+            generation = self._sound_generation
+            alias = f"whisper_feedback_{generation}"
+
+            path_text = str(sound_path)
+            open_result = winmm.mciSendStringW(f'open "{path_text}" type mpegvideo alias {alias}', None, 0, None)
+            if open_result:
+                raise RuntimeError(self._mci_error(open_result))
+            play_result = winmm.mciSendStringW(f"play {alias}", None, 0, None)
             if play_result:
+                winmm.mciSendStringW(f"close {alias}", None, 0, None)
                 raise RuntimeError(self._mci_error(play_result))
-        finally:
+            self._current_sound_alias = alias
+
+        close_timer = threading.Timer(10.0, self._close_sound_alias, args=(alias, generation))
+        close_timer.daemon = True
+        close_timer.start()
+
+    def _close_sound_alias(self, alias: str, generation: int) -> None:
+        with self._sound_lock:
+            if self._sound_generation != generation or self._current_sound_alias != alias:
+                return
             winmm.mciSendStringW(f"close {alias}", None, 0, None)
+            self._current_sound_alias = None
 
     def _mci_error(self, error_code: int) -> str:
         buffer = ctypes.create_unicode_buffer(256)
