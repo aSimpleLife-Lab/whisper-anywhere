@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.app_icon import app_icon
+from core.app_icon import app_icon, apply_native_window_icon
 from core.audio_recorder import AudioRecorder, AudioRecorderError
 from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import LARGE_MODELS, ModelManager, WhisperModelInfo
@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.setMinimumSize(1080, 780)
         self._build_ui()
+        apply_native_window_icon(int(self.winId()))
         self._connect_signals()
         self._load_settings_into_ui()
         self._apply_styles()

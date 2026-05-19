@@ -19,6 +19,14 @@ from core.transcriber import Transcriber
 from core.tray_manager import TrayManager
 from ui.main_window import MainWindow
 
+APP_USER_MODEL_ID = "aSimpleLifeLab.WhisperAnywhere"
+
+
+def set_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+
 
 def should_start_minimized() -> bool:
     flags = {"--minimized", "--hidden", "/minimized", "/tray"}
@@ -32,6 +40,7 @@ def should_start_minimized() -> bool:
 
 def main() -> int:
     multiprocessing.freeze_support()
+    set_windows_app_id()
     start_minimized = should_start_minimized()
 
     app = QApplication(sys.argv)

@@ -25,6 +25,7 @@ Write-Host "Building Whisper Anywhere.exe..."
     --icon "assets\icon.ico" `
     --paths "src" `
     --add-data "assets\icon.ico;assets" `
+    --add-data "assets\icon.png;assets" `
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
     --collect-all av `
