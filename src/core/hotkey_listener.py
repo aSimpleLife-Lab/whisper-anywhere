@@ -127,6 +127,7 @@ TRIGGER_TOKEN_ALIASES = {
 
 PYNPUT_KEY_TOKENS: dict[object, str] = {}
 if pynput_keyboard is not None:
+
     def _register_pynput_key(token: str, *names: str) -> None:
         for name in names:
             key = getattr(pynput_keyboard.Key, name, None)
@@ -165,7 +166,11 @@ class ParsedShortcut:
 
     @property
     def display(self) -> str:
-        parts = [DISPLAY_MODIFIER[name] for name in ("ctrl", "shift", "alt", "win") if name in self.modifiers]
+        parts = [
+            DISPLAY_MODIFIER[name]
+            for name in ("ctrl", "shift", "alt", "win")
+            if name in self.modifiers
+        ]
         if self.trigger_name:
             parts.append(self.trigger_name)
         return "+".join(parts)
@@ -200,7 +205,11 @@ def _display_trigger_name(raw_part: str, token: str) -> str:
 
 
 def parse_shortcut(shortcut_text: str) -> ParsedShortcut:
-    parts = [part.strip() for part in shortcut_text.replace("-", "+").split("+") if part.strip()]
+    parts = [
+        part.strip()
+        for part in shortcut_text.replace("-", "+").split("+")
+        if part.strip()
+    ]
     if not parts:
         raise ValueError("Enter a shortcut such as Ctrl+Alt+Q.")
 
@@ -273,13 +282,22 @@ def shortcut_warning(shortcut_text: str) -> str:
         return "Single-key shortcuts can trigger while typing. Use a modifier if it gets in the way."
     if parsed.trigger_vk is None:
         return "Modifier-only shortcuts are unreliable. Ctrl+Alt+Q is recommended."
-    if parsed.trigger_token in {"esc", "tab", "enter", "backspace", "delete", "space"} and len(parsed.modifiers) < 2:
+    if (
+        parsed.trigger_token in {"esc", "tab", "enter", "backspace", "delete", "space"}
+        and len(parsed.modifiers) < 2
+    ):
         return "This key is used heavily by Windows and apps. Add two modifiers or use Ctrl+Alt+Q."
-    if parsed.trigger_token and parsed.trigger_token.startswith("f") and parsed.trigger_token in {"f1", "f5", "f11", "f12"}:
+    if (
+        parsed.trigger_token
+        and parsed.trigger_token.startswith("f")
+        and parsed.trigger_token in {"f1", "f5", "f11", "f12"}
+    ):
         return "This function key is commonly used by Windows, browsers, or developer tools."
     if "win" in parsed.modifiers:
         return "Windows-key shortcuts can be intercepted by the shell on some systems. Ctrl+Alt+Q is the safest default."
-    if parsed.modifiers == frozenset({"ctrl"}) or parsed.modifiers == frozenset({"alt"}):
+    if parsed.modifiers == frozenset({"ctrl"}) or parsed.modifiers == frozenset(
+        {"alt"}
+    ):
         return "Single-modifier shortcuts often conflict with app menus and editor/browser shortcuts. Ctrl+Alt+Q is recommended."
     return ""
 
@@ -335,11 +353,15 @@ class HotkeyListener(QObject):
             self.status.emit(message)
             return
 
-        self._log(f"Starting pynput hotkey listener: shortcut={self.shortcut.display}, mode={self.mode}")
+        self._log(
+            f"Starting pynput hotkey listener: shortcut={self.shortcut.display}, mode={self.mode}"
+        )
         self.status.emit(f"Starting global shortcut listener. Log: {self.log_path}")
         self._running = True
         try:
-            listener = pynput_keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+            listener = pynput_keyboard.Listener(
+                on_press=self._on_press, on_release=self._on_release
+            )
             listener.daemon = True
             listener.start()
         except Exception as exc:
@@ -450,7 +472,12 @@ class HotkeyListener(QObject):
             self._pressed_tokens.discard(token)
             is_combo_active = self._is_combo_active_locked()
             self._shortcut_active = is_combo_active
-            if self.mode == "hold" and was_combo_active and was_in_combo and not is_combo_active:
+            if (
+                self.mode == "hold"
+                and was_combo_active
+                and was_in_combo
+                and not is_combo_active
+            ):
                 self._cancel_watchdog_locked()
                 emit_released = True
 
@@ -497,7 +524,9 @@ class HotkeyListener(QObject):
         return frozenset(values)
 
     def _is_combo_active_locked(self) -> bool:
-        return bool(self._required_tokens) and self._required_tokens.issubset(self._pressed_tokens)
+        return bool(self._required_tokens) and self._required_tokens.issubset(
+            self._pressed_tokens
+        )
 
     def _arm_watchdog_locked(self) -> None:
         self._cancel_watchdog_locked()

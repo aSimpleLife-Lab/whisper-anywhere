@@ -54,14 +54,22 @@ class AudioRecorder:
                 return device
         return None
 
-    def start(self, microphone_device: str = "default", level_callback: Callable[[float], None] | None = None) -> None:
+    def start(
+        self,
+        microphone_device: str = "default",
+        level_callback: Callable[[float], None] | None = None,
+    ) -> None:
         if self.is_recording:
             raise AudioRecorderError("The microphone is already recording.")
 
         self._frames = []
         self._last_status = ""
         self._level_callback = level_callback
-        device = None if microphone_device in ("", "default", None) else int(microphone_device)
+        device = (
+            None
+            if microphone_device in ("", "default", None)
+            else int(microphone_device)
+        )
 
         try:
             self._stream = sd.InputStream(
@@ -108,7 +116,9 @@ class AudioRecorder:
 
         temp_dir = Path(tempfile.gettempdir()) / APP_NAME
         temp_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(suffix=".wav", prefix="recording-", dir=temp_dir, delete=False) as temp_file:
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav", prefix="recording-", dir=temp_dir, delete=False
+        ) as temp_file:
             output_path = temp_file.name
 
         with wave.open(output_path, "wb") as wav_file:
@@ -136,7 +146,13 @@ class AudioRecorder:
     def close(self) -> None:
         self.cancel()
 
-    def _on_audio(self, indata: np.ndarray, frames: int, time_info: object, status: sd.CallbackFlags) -> None:
+    def _on_audio(
+        self,
+        indata: np.ndarray,
+        frames: int,
+        time_info: object,
+        status: sd.CallbackFlags,
+    ) -> None:
         if status:
             self._last_status = str(status)
 
@@ -146,5 +162,9 @@ class AudioRecorder:
 
         if self._level_callback is not None:
             normalized = chunk.astype(np.float32) / 32768.0
-            rms = float(np.sqrt(np.mean(np.square(normalized)))) if normalized.size else 0.0
+            rms = (
+                float(np.sqrt(np.mean(np.square(normalized))))
+                if normalized.size
+                else 0.0
+            )
             self._level_callback(max(0.0, min(1.0, rms * 8.0)))

@@ -16,7 +16,9 @@ class TrayManager(QObject):
     exit_requested = Signal()
     model_selected = Signal(str)
 
-    def __init__(self, model_manager: ModelManager, parent: QObject | None = None) -> None:
+    def __init__(
+        self, model_manager: ModelManager, parent: QObject | None = None
+    ) -> None:
         super().__init__(parent)
         self.model_manager = model_manager
         self.tray = QSystemTrayIcon(self._make_icon(), self)
@@ -38,13 +40,17 @@ class TrayManager(QObject):
 
     def show_message(self, title: str, message: str) -> None:
         if self.tray.isVisible():
-            self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 3500)
+            self.tray.showMessage(
+                title, message, QSystemTrayIcon.MessageIcon.Information, 3500
+            )
 
     def _build_menu(self) -> None:
         menu = QMenu()
 
         start_action = QAction("Start listening", self)
-        start_action.triggered.connect(lambda checked=False: self.start_requested.emit())
+        start_action.triggered.connect(
+            lambda checked=False: self.start_requested.emit()
+        )
         menu.addAction(start_action)
 
         stop_action = QAction("Stop listening", self)
@@ -57,7 +63,9 @@ class TrayManager(QObject):
             action = QAction(info.name, self)
             action.setCheckable(True)
             action.setChecked(info.name == selected)
-            action.triggered.connect(lambda checked=False, name=info.name: self.model_selected.emit(name))
+            action.triggered.connect(
+                lambda checked=False, name=info.name: self.model_selected.emit(name)
+            )
             self.model_actions[info.name] = action
             model_menu.addAction(action)
 
@@ -68,7 +76,9 @@ class TrayManager(QObject):
         menu.addAction(open_action)
 
         settings_action = QAction("Settings", self)
-        settings_action.triggered.connect(lambda checked=False: self.settings_requested.emit())
+        settings_action.triggered.connect(
+            lambda checked=False: self.settings_requested.emit()
+        )
         menu.addAction(settings_action)
 
         menu.addSeparator()

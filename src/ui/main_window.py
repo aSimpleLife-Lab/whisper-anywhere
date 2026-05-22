@@ -104,35 +104,47 @@ class FirstRunSetupDialog(QDialog):
 
         form = QFormLayout()
         self.shortcut_input = ShortcutCaptureInput()
-        self.shortcut_input.setText(str(parent.settings_manager.get("shortcut", "Ctrl+Alt+Q")))
+        self.shortcut_input.setText(
+            str(parent.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
+        )
         form.addRow("Shortcut", self.shortcut_input)
 
         self.model_combo = SafeComboBox()
         for info in parent.model_manager.models():
             self.model_combo.addItem(info.name, info.name)
-        parent._select_combo_data(self.model_combo, parent.model_manager.selected_model())
+        parent._select_combo_data(
+            self.model_combo, parent.model_manager.selected_model()
+        )
         form.addRow("Whisper model", self.model_combo)
 
         self.mic_combo = SafeComboBox()
         for device in parent.audio_recorder.list_input_devices():
             self.mic_combo.addItem(device.name, device.id)
-        parent._select_combo_data(self.mic_combo, parent.settings_manager.get("microphone_device", "default"))
+        parent._select_combo_data(
+            self.mic_combo, parent.settings_manager.get("microphone_device", "default")
+        )
         form.addRow("Microphone", self.mic_combo)
 
         self.device_combo = SafeComboBox()
         self.device_combo.addItem("CPU Only - safest", "cpu")
         self.device_combo.addItem("Auto", "auto")
         self.device_combo.addItem("GPU Preferred - advanced", "gpu")
-        parent._select_combo_data(self.device_combo, parent.settings_manager.get("device", "cpu"))
+        parent._select_combo_data(
+            self.device_combo, parent.settings_manager.get("device", "cpu")
+        )
         form.addRow("Hardware", self.device_combo)
         layout.addLayout(form)
 
-        note = QLabel("Safe default: Ctrl+Alt+Q, base model, default microphone, CPU/int8.")
+        note = QLabel(
+            "Safe default: Ctrl+Alt+Q, base model, default microphone, CPU/int8."
+        )
         note.setWordWrap(True)
         note.setObjectName("mutedLabel")
         layout.addWidget(note)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Save setup")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Skip for now")
         buttons.accepted.connect(self.accept)
@@ -204,7 +216,9 @@ class ShortcutCaptureInput(QLineEdit):
         if event.isAutoRepeat():
             event.accept()
             return
-        if event.key() == _qt_key_value(Qt.Key.Key_Escape) and not self._modifier_names(event.modifiers()):
+        if event.key() == _qt_key_value(Qt.Key.Key_Escape) and not self._modifier_names(
+            event.modifiers()
+        ):
             self.cancel_capture()
             event.accept()
             return
@@ -319,7 +333,9 @@ class ShortcutCaptureInput(QLineEdit):
 
     def _format_tokens(self, tokens: set[str]) -> str:
         ordered = [name for name in ("Ctrl", "Shift", "Alt", "Win") if name in tokens]
-        triggers = sorted(token for token in tokens if token not in {"Ctrl", "Shift", "Alt", "Win"})
+        triggers = sorted(
+            token for token in tokens if token not in {"Ctrl", "Shift", "Alt", "Win"}
+        )
         return "+".join(ordered + triggers)
 
 
@@ -380,7 +396,10 @@ class MainWindow(QMainWindow):
         self._load_settings_into_ui()
         self._apply_styles()
         shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
-        self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
+        self.set_status(
+            "Ready",
+            f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.",
+        )
         self._refresh_model_status()
         if not bool(self.settings_manager.get("first_run_setup_completed", False)):
             QTimer.singleShot(500, self.show_first_run_setup)
@@ -400,8 +419,14 @@ class MainWindow(QMainWindow):
         title_block.addWidget(self.title_label)
         title_block.addWidget(subtitle)
         header.addLayout(title_block)
-        header.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-        self.settings_path_label = QLabel(f"Settings: {self.settings_manager.settings_path_text}")
+        header.addItem(
+            QSpacerItem(
+                20, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+            )
+        )
+        self.settings_path_label = QLabel(
+            f"Settings: {self.settings_manager.settings_path_text}"
+        )
         self.settings_path_label.setObjectName("mutedLabel")
         header.addWidget(self.settings_path_label)
         root_layout.addLayout(header)
@@ -429,7 +454,12 @@ class MainWindow(QMainWindow):
         self.bottom_model = QLabel("Whisper: base")
         self.bottom_mic = QLabel("Mic: Default system microphone")
         self.bottom_shortcut = QLabel("Shortcut: Ctrl+Alt+Q")
-        for label in (self.bottom_status, self.bottom_model, self.bottom_mic, self.bottom_shortcut):
+        for label in (
+            self.bottom_status,
+            self.bottom_model,
+            self.bottom_mic,
+            self.bottom_shortcut,
+        ):
             label.setObjectName("bottomLabel")
         bottom.addWidget(self.bottom_status)
         bottom.addStretch(1)
@@ -524,7 +554,9 @@ class MainWindow(QMainWindow):
             button = QPushButton(self._model_card_text(info))
             button.setCheckable(True)
             button.setObjectName("modelCard")
-            button.clicked.connect(lambda checked=False, name=info.name: self.select_model(name))
+            button.clicked.connect(
+                lambda checked=False, name=info.name: self.select_model(name)
+            )
             self.model_buttons[info.name] = button
             grid.addWidget(button, index // 4, index % 4)
         layout.addLayout(grid)
@@ -580,7 +612,9 @@ class MainWindow(QMainWindow):
         self.hotkey_status_label.setObjectName("mutedLabel")
         layout.addWidget(self.hotkey_status_label, 4, 1, 1, 3)
 
-        self.hotkey_log_label = QLabel(f"Hotkey log: {self.settings_manager.hotkey_log_path_text}")
+        self.hotkey_log_label = QLabel(
+            f"Hotkey log: {self.settings_manager.hotkey_log_path_text}"
+        )
         self.hotkey_log_label.setObjectName("mutedLabel")
         layout.addWidget(self.hotkey_log_label, 5, 1, 1, 3)
 
@@ -589,10 +623,14 @@ class MainWindow(QMainWindow):
         self.insert_method_combo.addItem("Clipboard paste", "clipboard_paste")
         layout.addWidget(self.insert_method_combo, 6, 1)
 
-        self.restore_clipboard_checkbox = QCheckBox("Restore previous clipboard after paste")
+        self.restore_clipboard_checkbox = QCheckBox(
+            "Restore previous clipboard after paste"
+        )
         layout.addWidget(self.restore_clipboard_checkbox, 6, 2, 1, 2)
 
-        self.start_with_windows_checkbox = QCheckBox("Start with Windows hidden in the tray")
+        self.start_with_windows_checkbox = QCheckBox(
+            "Start with Windows hidden in the tray"
+        )
         layout.addWidget(self.start_with_windows_checkbox, 7, 1, 1, 3)
 
         return panel
@@ -654,7 +692,9 @@ class MainWindow(QMainWindow):
             self.cpu_threads_combo.addItem(f"CPU threads: {value}", value)
         layout.addWidget(self.cpu_threads_combo, 4, 2)
 
-        self.hardware_note = QLabel("Auto uses GPU when a compatible CUDA setup is available, otherwise CPU.")
+        self.hardware_note = QLabel(
+            "Auto uses GPU when a compatible CUDA setup is available, otherwise CPU."
+        )
         self.hardware_note.setObjectName("mutedLabel")
         layout.addWidget(self.hardware_note, 5, 1, 1, 3)
 
@@ -694,40 +734,90 @@ class MainWindow(QMainWindow):
         title.setObjectName("sectionTitle")
         self.last_transcript = QTextEdit()
         self.last_transcript.setReadOnly(True)
-        self.last_transcript.setPlaceholderText("Your most recent transcribed text will appear here.")
+        self.last_transcript.setPlaceholderText(
+            "Your most recent transcribed text will appear here."
+        )
         self.last_transcript.setFixedHeight(110)
         layout.addWidget(title)
         layout.addWidget(self.last_transcript)
         return panel
 
     def _connect_signals(self) -> None:
-        self.mic_button.clicked.connect(lambda checked=False: self.toggle_manual_listening())
-        self.prepare_model_button.clicked.connect(lambda checked=False: self.prepare_selected_model(auto=False))
-        self.check_updates_button.clicked.connect(lambda checked=False: self.check_for_updates())
-        self.copy_diagnostics_button.clicked.connect(lambda checked=False: self.copy_diagnostics())
-        self.save_diagnostics_button.clicked.connect(lambda checked=False: self.save_diagnostics())
-        self.export_settings_button.clicked.connect(lambda checked=False: self.export_settings())
-        self.import_settings_button.clicked.connect(lambda checked=False: self.import_settings())
-        self.run_setup_button.clicked.connect(lambda checked=False: self.show_first_run_setup(force=True))
-        self.apply_shortcut_button.clicked.connect(lambda checked=False: self.apply_shortcut_settings())
-        self.shortcut_input.textChanged.connect(lambda text="": self.update_shortcut_warning())
+        self.mic_button.clicked.connect(
+            lambda checked=False: self.toggle_manual_listening()
+        )
+        self.prepare_model_button.clicked.connect(
+            lambda checked=False: self.prepare_selected_model(auto=False)
+        )
+        self.check_updates_button.clicked.connect(
+            lambda checked=False: self.check_for_updates()
+        )
+        self.copy_diagnostics_button.clicked.connect(
+            lambda checked=False: self.copy_diagnostics()
+        )
+        self.save_diagnostics_button.clicked.connect(
+            lambda checked=False: self.save_diagnostics()
+        )
+        self.export_settings_button.clicked.connect(
+            lambda checked=False: self.export_settings()
+        )
+        self.import_settings_button.clicked.connect(
+            lambda checked=False: self.import_settings()
+        )
+        self.run_setup_button.clicked.connect(
+            lambda checked=False: self.show_first_run_setup(force=True)
+        )
+        self.apply_shortcut_button.clicked.connect(
+            lambda checked=False: self.apply_shortcut_settings()
+        )
+        self.shortcut_input.textChanged.connect(
+            lambda text="": self.update_shortcut_warning()
+        )
         self.shortcut_input.capture_started.connect(self.start_shortcut_capture)
         self.shortcut_input.shortcut_captured.connect(self.finish_shortcut_capture)
         self.shortcut_input.capture_cancelled.connect(self.cancel_shortcut_capture)
-        self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
-        self.insert_method_combo.currentIndexChanged.connect(lambda index=0: self.save_typing_settings())
-        self.restore_clipboard_checkbox.stateChanged.connect(lambda state=0: self.save_typing_settings())
-        self.start_with_windows_checkbox.stateChanged.connect(lambda state=0: self.save_startup_settings())
-        self.performance_combo.currentIndexChanged.connect(lambda index=0: self.apply_performance_preset())
-        self.device_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
-        self.compute_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
-        self.cpu_threads_combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
-        self.low_ram_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
-        self.low_vram_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
-        self.fallback_cpu_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
-        self.warn_large_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
-        self.auto_download_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
-        self.use_gpu_checkbox.stateChanged.connect(lambda state=0: self.save_performance_settings())
+        self.mic_combo.currentIndexChanged.connect(
+            lambda index=0: self.save_microphone_setting()
+        )
+        self.insert_method_combo.currentIndexChanged.connect(
+            lambda index=0: self.save_typing_settings()
+        )
+        self.restore_clipboard_checkbox.stateChanged.connect(
+            lambda state=0: self.save_typing_settings()
+        )
+        self.start_with_windows_checkbox.stateChanged.connect(
+            lambda state=0: self.save_startup_settings()
+        )
+        self.performance_combo.currentIndexChanged.connect(
+            lambda index=0: self.apply_performance_preset()
+        )
+        self.device_combo.currentIndexChanged.connect(
+            lambda index=0: self.save_performance_settings()
+        )
+        self.compute_combo.currentIndexChanged.connect(
+            lambda index=0: self.save_performance_settings()
+        )
+        self.cpu_threads_combo.currentIndexChanged.connect(
+            lambda index=0: self.save_performance_settings()
+        )
+        self.low_ram_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
+        self.low_vram_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
+        self.fallback_cpu_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
+        self.warn_large_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
+        self.auto_download_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
+        self.use_gpu_checkbox.stateChanged.connect(
+            lambda state=0: self.save_performance_settings()
+        )
         self.level_changed.connect(self.update_level)
         self.transcription_done.connect(self.finish_transcription)
         self.transcription_failed.connect(self.fail_transcription)
@@ -742,22 +832,49 @@ class MainWindow(QMainWindow):
         self.refresh_microphones()
         selected = self.model_manager.selected_model()
         self._update_model_buttons(selected)
-        self.shortcut_input.setText(str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q")))
+        self.shortcut_input.setText(
+            str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
+        )
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.mode_combo.setCurrentIndex(0 if mode == "hold" else 1)
         self.insert_method_combo.setCurrentIndex(0)
-        self.restore_clipboard_checkbox.setChecked(bool(self.settings_manager.get("restore_clipboard", True)))
-        self.start_with_windows_checkbox.setChecked(bool(self.settings_manager.get("start_with_windows", False)))
-        self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
-        self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
-        self._select_combo_data(self.compute_combo, self.settings_manager.get("compute_type", "auto"))
-        self._select_combo_data(self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto"))
-        self.low_ram_checkbox.setChecked(bool(self.settings_manager.get("low_ram_mode", False)))
-        self.low_vram_checkbox.setChecked(bool(self.settings_manager.get("low_vram_mode", False)))
-        self.fallback_cpu_checkbox.setChecked(bool(self.settings_manager.get("fallback_to_cpu", True)))
-        self.warn_large_checkbox.setChecked(bool(self.settings_manager.get("warn_before_large_models", True)))
-        self.auto_download_checkbox.setChecked(bool(self.settings_manager.get("auto_download_models", True)))
-        self.use_gpu_checkbox.setChecked(bool(self.settings_manager.get("use_gpu_if_available", True)))
+        self.restore_clipboard_checkbox.setChecked(
+            bool(self.settings_manager.get("restore_clipboard", True))
+        )
+        self.start_with_windows_checkbox.setChecked(
+            bool(self.settings_manager.get("start_with_windows", False))
+        )
+        self._select_combo_data(
+            self.performance_combo,
+            self.settings_manager.get("performance_preset", "balanced"),
+        )
+        self._select_combo_data(
+            self.device_combo, self.settings_manager.get("device", "auto")
+        )
+        self._select_combo_data(
+            self.compute_combo, self.settings_manager.get("compute_type", "auto")
+        )
+        self._select_combo_data(
+            self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto")
+        )
+        self.low_ram_checkbox.setChecked(
+            bool(self.settings_manager.get("low_ram_mode", False))
+        )
+        self.low_vram_checkbox.setChecked(
+            bool(self.settings_manager.get("low_vram_mode", False))
+        )
+        self.fallback_cpu_checkbox.setChecked(
+            bool(self.settings_manager.get("fallback_to_cpu", True))
+        )
+        self.warn_large_checkbox.setChecked(
+            bool(self.settings_manager.get("warn_before_large_models", True))
+        )
+        self.auto_download_checkbox.setChecked(
+            bool(self.settings_manager.get("auto_download_models", True))
+        )
+        self.use_gpu_checkbox.setChecked(
+            bool(self.settings_manager.get("use_gpu_if_available", True))
+        )
         self._loading_ui = False
         self.update_shortcut_warning()
         self.update_bottom_labels()
@@ -772,8 +889,13 @@ class MainWindow(QMainWindow):
         index = self.mic_combo.findData(current)
         if index < 0 and current != "default":
             self.settings_manager.set("microphone_device", "default")
-            self._append_activity_log(f"selected microphone missing: {current}; falling back to default")
-            self.set_status("Microphone changed", "The saved microphone was not found, so the default system microphone will be used.")
+            self._append_activity_log(
+                f"selected microphone missing: {current}; falling back to default"
+            )
+            self.set_status(
+                "Microphone changed",
+                "The saved microphone was not found, so the default system microphone will be used.",
+            )
         self.mic_combo.setCurrentIndex(index if index >= 0 else 0)
         self.mic_combo.blockSignals(False)
 
@@ -788,24 +910,49 @@ class MainWindow(QMainWindow):
         if self.model_manager.is_model_ready(selected):
             self.model_status.setText(f"Model ready: {selected}")
         elif bool(self.settings_manager.get("auto_download_models", True)):
-            self.model_status.setText(f"Model not prepared yet: {selected}. It will prepare when you use the shortcut.")
+            self.model_status.setText(
+                f"Model not prepared yet: {selected}. It will prepare when you use the shortcut."
+            )
         else:
-            self.model_status.setText(f"Model not prepared yet: {selected}. Click Prepare model now to download it.")
+            self.model_status.setText(
+                f"Model not prepared yet: {selected}. Click Prepare model now to download it."
+            )
         self._update_model_buttons(selected)
 
     def _restore_performance_controls(self) -> None:
         self._loading_ui = True
         try:
-            self._select_combo_data(self.performance_combo, self.settings_manager.get("performance_preset", "balanced"))
-            self._select_combo_data(self.device_combo, self.settings_manager.get("device", "auto"))
-            self._select_combo_data(self.compute_combo, self.settings_manager.get("compute_type", "auto"))
-            self._select_combo_data(self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto"))
-            self.low_ram_checkbox.setChecked(bool(self.settings_manager.get("low_ram_mode", False)))
-            self.low_vram_checkbox.setChecked(bool(self.settings_manager.get("low_vram_mode", False)))
-            self.fallback_cpu_checkbox.setChecked(bool(self.settings_manager.get("fallback_to_cpu", True)))
-            self.warn_large_checkbox.setChecked(bool(self.settings_manager.get("warn_before_large_models", True)))
-            self.auto_download_checkbox.setChecked(bool(self.settings_manager.get("auto_download_models", True)))
-            self.use_gpu_checkbox.setChecked(bool(self.settings_manager.get("use_gpu_if_available", True)))
+            self._select_combo_data(
+                self.performance_combo,
+                self.settings_manager.get("performance_preset", "balanced"),
+            )
+            self._select_combo_data(
+                self.device_combo, self.settings_manager.get("device", "auto")
+            )
+            self._select_combo_data(
+                self.compute_combo, self.settings_manager.get("compute_type", "auto")
+            )
+            self._select_combo_data(
+                self.cpu_threads_combo, self.settings_manager.get("cpu_threads", "auto")
+            )
+            self.low_ram_checkbox.setChecked(
+                bool(self.settings_manager.get("low_ram_mode", False))
+            )
+            self.low_vram_checkbox.setChecked(
+                bool(self.settings_manager.get("low_vram_mode", False))
+            )
+            self.fallback_cpu_checkbox.setChecked(
+                bool(self.settings_manager.get("fallback_to_cpu", True))
+            )
+            self.warn_large_checkbox.setChecked(
+                bool(self.settings_manager.get("warn_before_large_models", True))
+            )
+            self.auto_download_checkbox.setChecked(
+                bool(self.settings_manager.get("auto_download_models", True))
+            )
+            self.use_gpu_checkbox.setChecked(
+                bool(self.settings_manager.get("use_gpu_if_available", True))
+            )
         finally:
             self._loading_ui = False
 
@@ -848,7 +995,10 @@ class MainWindow(QMainWindow):
             self.set_status("Busy", self._pipeline_busy_message())
             return
         normalized = self.model_manager.normalize_model_name(model_name)
-        if normalized != self.model_manager.selected_model() and not self._confirm_model_choice(normalized):
+        if (
+            normalized != self.model_manager.selected_model()
+            and not self._confirm_model_choice(normalized)
+        ):
             self._update_model_buttons(self.model_manager.selected_model())
             return
         self.model_manager.select_model(normalized)
@@ -864,11 +1014,21 @@ class MainWindow(QMainWindow):
     def _confirm_model_choice(self, model_name: str) -> bool:
         warnings: list[str] = []
         if self.warn_large_checkbox.isChecked() and model_name in LARGE_MODELS:
-            warnings.append("Large Whisper models need much more RAM or VRAM and can take longer to load.")
+            warnings.append(
+                "Large Whisper models need much more RAM or VRAM and can take longer to load."
+            )
         if self.low_ram_checkbox.isChecked() and model_name in LARGE_MODELS:
-            warnings.append("Low RAM Mode is on, so a smaller model such as base or small is safer.")
-        if self.low_vram_checkbox.isChecked() and model_name in {"large", "large-v2", "large-v3"}:
-            warnings.append("Low VRAM Mode is on, so large-v3 may be slow or fail on smaller GPUs.")
+            warnings.append(
+                "Low RAM Mode is on, so a smaller model such as base or small is safer."
+            )
+        if self.low_vram_checkbox.isChecked() and model_name in {
+            "large",
+            "large-v2",
+            "large-v3",
+        }:
+            warnings.append(
+                "Low VRAM Mode is on, so large-v3 may be slow or fail on smaller GPUs."
+            )
         if not warnings:
             return True
         answer = QMessageBox.question(
@@ -910,10 +1070,14 @@ class MainWindow(QMainWindow):
             self._update_model_buttons(selected)
             return
         if auto and not bool(self.settings_manager.get("auto_download_models", True)):
-            self.model_status.setText("Selected model is not installed yet. Click Prepare model now.")
+            self.model_status.setText(
+                "Selected model is not installed yet. Click Prepare model now."
+            )
             self._update_model_buttons(selected)
             return
-        if not auto and not bool(self.settings_manager.get("auto_download_models", True)):
+        if not auto and not bool(
+            self.settings_manager.get("auto_download_models", True)
+        ):
             answer = QMessageBox.question(
                 self,
                 "Download Whisper model?",
@@ -921,7 +1085,9 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        if self.model_manager.is_large_model() and bool(self.settings_manager.get("warn_before_large_models", True)):
+        if self.model_manager.is_large_model() and bool(
+            self.settings_manager.get("warn_before_large_models", True)
+        ):
             if not self._confirm_model_choice(selected):
                 return
 
@@ -932,14 +1098,22 @@ class MainWindow(QMainWindow):
         self._active_model_prepare_id = request_id
         self.model_progress.setVisible(True)
         self.model_progress.setRange(0, 0)
-        self.model_status.setText(f"Preparing {selected} model. Downloading/loading may take several minutes the first time.")
+        self.model_status.setText(
+            f"Preparing {selected} model. Downloading/loading may take several minutes the first time."
+        )
         self._model_progress_timer.start()
         settings = self.settings_manager.all()
         transcriber = self.transcriber
         self._start_model_prepare_timer(request_id)
-        threading.Thread(target=self._prepare_model_worker, args=(request_id, settings, transcriber), daemon=True).start()
+        threading.Thread(
+            target=self._prepare_model_worker,
+            args=(request_id, settings, transcriber),
+            daemon=True,
+        ).start()
 
-    def _prepare_model_worker(self, request_id: int, settings: dict[str, Any], transcriber: Transcriber) -> None:
+    def _prepare_model_worker(
+        self, request_id: int, settings: dict[str, Any], transcriber: Transcriber
+    ) -> None:
         try:
             transcriber.prepare_selected_model(settings)
         except Exception as exc:
@@ -949,7 +1123,9 @@ class MainWindow(QMainWindow):
 
     def finish_model_prepare(self, request_id: int, model_name: str) -> None:
         if request_id != self._active_model_prepare_id:
-            self._append_activity_log(f"finish_model_prepare ignored stale id={request_id}")
+            self._append_activity_log(
+                f"finish_model_prepare ignored stale id={request_id}"
+            )
             return
         self._cancel_model_prepare_timer()
         self._active_model_prepare_id = 0
@@ -964,11 +1140,16 @@ class MainWindow(QMainWindow):
         else:
             self.model_status.setText(f"Model ready: {model_name}")
             shortcut = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
-            self.set_status("Ready", f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.")
+            self.set_status(
+                "Ready",
+                f"Click anywhere, {self._mode_label().lower()} {shortcut}, speak, then release.",
+            )
 
     def fail_model_prepare(self, request_id: int, message: str) -> None:
         if request_id != self._active_model_prepare_id:
-            self._append_activity_log(f"fail_model_prepare ignored stale id={request_id}: {message}")
+            self._append_activity_log(
+                f"fail_model_prepare ignored stale id={request_id}: {message}"
+            )
             return
         self._cancel_model_prepare_timer()
         self._active_model_prepare_id = 0
@@ -1018,22 +1199,35 @@ class MainWindow(QMainWindow):
 
     def start_listening(self) -> None:
         if self._is_capturing_shortcut:
-            self._append_activity_log("start_listening ignored: shortcut capture active")
+            self._append_activity_log(
+                "start_listening ignored: shortcut capture active"
+            )
             return
         if self._is_listening or self._is_transcribing:
-            self._append_activity_log("start_listening ignored: already listening or transcribing")
+            self._append_activity_log(
+                "start_listening ignored: already listening or transcribing"
+            )
             return
         if self._is_preparing_model:
             self._append_activity_log("start_listening blocked: model still preparing")
-            self.set_status("Preparing", "The Whisper model is still being prepared. Try again when it says Ready.")
+            self.set_status(
+                "Preparing",
+                "The Whisper model is still being prepared. Try again when it says Ready.",
+            )
             return
         if not self.model_manager.is_model_ready():
             self._append_activity_log("start_listening triggered model prepare")
             self.prepare_selected_model(auto=True)
             if self._is_preparing_model:
-                self.set_status("Preparing", "Preparing the selected Whisper model first. Use the shortcut again when it says Ready.")
+                self.set_status(
+                    "Preparing",
+                    "Preparing the selected Whisper model first. Use the shortcut again when it says Ready.",
+                )
             else:
-                self.set_status("Model not ready", "Auto-download is off. Click Prepare model now before using the shortcut.")
+                self.set_status(
+                    "Model not ready",
+                    "Auto-download is off. Click Prepare model now before using the shortcut.",
+                )
             return
 
         microphone_id = self._selected_microphone_id()
@@ -1043,7 +1237,9 @@ class MainWindow(QMainWindow):
             self._target_hwnd = current_target
         else:
             self._target_hwnd = None
-        self._append_activity_log(f"start_listening target={self._target_hwnd} microphone={microphone_id}")
+        self._append_activity_log(
+            f"start_listening target={self._target_hwnd} microphone={microphone_id}"
+        )
         try:
             self.audio_recorder.start(str(microphone_id), self.level_changed.emit)
         except AudioRecorderError as exc:
@@ -1053,19 +1249,30 @@ class MainWindow(QMainWindow):
 
         self._is_listening = True
         self.mic_button.setText("STOP")
-        self.set_status("Listening", "Speak clearly. Release the shortcut to transcribe and type.")
+        self.set_status(
+            "Listening", "Speak clearly. Release the shortcut to transcribe and type."
+        )
 
     def _selected_microphone_id(self) -> str:
-        microphone_id = str(self.mic_combo.currentData() or self.settings_manager.get("microphone_device", "default") or "default")
+        microphone_id = str(
+            self.mic_combo.currentData()
+            or self.settings_manager.get("microphone_device", "default")
+            or "default"
+        )
         if microphone_id == "default":
             return "default"
         if self.audio_recorder.input_device_by_id(microphone_id) is not None:
             return microphone_id
-        self._append_activity_log(f"microphone missing before recording: {microphone_id}; using default")
+        self._append_activity_log(
+            f"microphone missing before recording: {microphone_id}; using default"
+        )
         self.settings_manager.set("microphone_device", "default")
         self.refresh_microphones()
         self.update_bottom_labels()
-        self.set_status("Microphone changed", "The selected microphone is missing, so the default system microphone will be used.")
+        self.set_status(
+            "Microphone changed",
+            "The selected microphone is missing, so the default system microphone will be used.",
+        )
         return "default"
 
     def stop_listening_and_transcribe(self, release_window_hwnd: object = None) -> None:
@@ -1076,14 +1283,18 @@ class MainWindow(QMainWindow):
         self.mic_button.setText("MIC")
         self.level_bar.setValue(0)
         try:
-            release_window = int(release_window_hwnd) if release_window_hwnd is not None else None
+            release_window = (
+                int(release_window_hwnd) if release_window_hwnd is not None else None
+            )
         except (TypeError, ValueError):
             release_window = None
         if release_window:
             captured_target = self.text_inserter.get_window_target(release_window)
             if captured_target is not None:
                 self._target_hwnd = captured_target
-        self._append_activity_log(f"stop_listening release_window={release_window} target={self._target_hwnd}")
+        self._append_activity_log(
+            f"stop_listening release_window={release_window} target={self._target_hwnd}"
+        )
 
         try:
             audio_path = self.audio_recorder.stop()
@@ -1097,10 +1308,16 @@ class MainWindow(QMainWindow):
         request_id = self._transcription_request_id
         self._active_transcription_id = request_id
         self._append_activity_log(f"audio captured: {audio_path}")
-        self.set_status("Transcribing", "Local Whisper is turning your speech into text.")
+        self.set_status(
+            "Transcribing", "Local Whisper is turning your speech into text."
+        )
         settings = self.settings_manager.all()
         self._start_transcription_timer(request_id, audio_path)
-        threading.Thread(target=self._transcribe_worker, args=(request_id, audio_path, settings), daemon=True).start()
+        threading.Thread(
+            target=self._transcribe_worker,
+            args=(request_id, audio_path, settings),
+            daemon=True,
+        ).start()
 
     def cancel_listening(self) -> None:
         if not self._is_listening:
@@ -1112,50 +1329,74 @@ class MainWindow(QMainWindow):
         self.level_bar.setValue(0)
         self.set_status("Ready", "Recording cancelled.")
 
-    def _transcribe_worker(self, request_id: int, audio_path: str, settings: dict[str, Any]) -> None:
-        self._append_activity_log(f"transcribe_worker start: id={request_id} path={audio_path}")
+    def _transcribe_worker(
+        self, request_id: int, audio_path: str, settings: dict[str, Any]
+    ) -> None:
+        self._append_activity_log(
+            f"transcribe_worker start: id={request_id} path={audio_path}"
+        )
         try:
             text = self.transcriber.transcribe(audio_path, settings)
         except Exception as exc:
-            self._append_activity_log(f"transcribe_worker failed: id={request_id} error={exc}")
+            self._append_activity_log(
+                f"transcribe_worker failed: id={request_id} error={exc}"
+            )
             self.transcription_failed.emit(request_id, str(exc), audio_path)
         else:
-            self._append_activity_log(f"transcribe_worker success: id={request_id} text={text!r}")
+            self._append_activity_log(
+                f"transcribe_worker success: id={request_id} text={text!r}"
+            )
             self.transcription_done.emit(request_id, text, audio_path)
 
     def finish_transcription(self, request_id: int, text: str, audio_path: str) -> None:
         if request_id != self._active_transcription_id:
-            self._append_activity_log(f"finish_transcription ignored stale id={request_id}")
+            self._append_activity_log(
+                f"finish_transcription ignored stale id={request_id}"
+            )
             self._delete_temp_audio(audio_path)
             return
         self._cancel_transcription_timer()
         self._active_transcription_id = 0
         self._is_transcribing = False
         self._delete_temp_audio(audio_path)
-        self._append_activity_log(f"finish_transcription id={request_id} text={text!r} target={self._target_hwnd}")
+        self._append_activity_log(
+            f"finish_transcription id={request_id} text={text!r} target={self._target_hwnd}"
+        )
         self.last_transcript.setPlainText(text)
         if not text:
             self._append_activity_log("finish_transcription no speech detected")
-            self.set_status("Ready", "No speech was detected. Try speaking closer to the microphone.")
+            self.set_status(
+                "Ready",
+                "No speech was detected. Try speaking closer to the microphone.",
+            )
             self._target_hwnd = None
             return
 
         self.set_status("Typing", "Typing into the focused Windows app.")
         try:
-            self.text_inserter.insert_text(text, self._target_hwnd, self.settings_manager.all())
+            self.text_inserter.insert_text(
+                text, self._target_hwnd, self.settings_manager.all()
+            )
         except TextInsertionError as exc:
             self._append_activity_log(f"text insertion failed: {exc}")
             self.set_status("Error", str(exc))
             self._target_hwnd = None
             return
         self._append_activity_log("text insertion completed")
-        detail = self.transcriber.runtime_message or "Done. Click anywhere and use the shortcut again."
+        detail = (
+            self.transcriber.runtime_message
+            or "Done. Click anywhere and use the shortcut again."
+        )
         self.set_status("Ready", detail)
         self._target_hwnd = None
 
-    def fail_transcription(self, request_id: int, message: str, audio_path: str) -> None:
+    def fail_transcription(
+        self, request_id: int, message: str, audio_path: str
+    ) -> None:
         if request_id != self._active_transcription_id:
-            self._append_activity_log(f"fail_transcription ignored stale id={request_id}: {message}")
+            self._append_activity_log(
+                f"fail_transcription ignored stale id={request_id}: {message}"
+            )
             self._delete_temp_audio(audio_path)
             return
         self._cancel_transcription_timer()
@@ -1173,7 +1414,9 @@ class MainWindow(QMainWindow):
         self._active_transcription_id = 0
         self._is_transcribing = False
         self._target_hwnd = None
-        self._append_activity_log(f"transcription timeout id={request_id} path={audio_path}")
+        self._append_activity_log(
+            f"transcription timeout id={request_id} path={audio_path}"
+        )
         self._reset_transcriber()
         self.set_status(
             "Error",
@@ -1204,7 +1447,9 @@ class MainWindow(QMainWindow):
                 f"{warning}\n\nSave this shortcut anyway?",
             )
             if answer != QMessageBox.StandardButton.Yes:
-                self.set_status("Shortcut not saved", "Choose a safer shortcut or keep Ctrl+Alt+Q.")
+                self.set_status(
+                    "Shortcut not saved", "Choose a safer shortcut or keep Ctrl+Alt+Q."
+                )
                 return
         mode = str(self.mode_combo.currentData() or "hold")
         self.shortcut_changed.emit(shortcut, mode)
@@ -1212,11 +1457,16 @@ class MainWindow(QMainWindow):
         self.shortcut_reminder.setText(f"{self._mode_label()} {shortcut} to talk")
         self.update_bottom_labels()
         self.set_status("Ready", f"Shortcut saved: {shortcut}")
-        self.set_hotkey_status(f"Shortcut saved: {shortcut}. Watch the hotkey log while testing.")
+        self.set_hotkey_status(
+            f"Shortcut saved: {shortcut}. Watch the hotkey log while testing."
+        )
 
     def start_shortcut_capture(self) -> None:
         self._is_capturing_shortcut = True
-        self.set_status("Shortcut capture", "Press the shortcut you want to use. Press Esc to cancel.")
+        self.set_status(
+            "Shortcut capture",
+            "Press the shortcut you want to use. Press Esc to cancel.",
+        )
 
     def finish_shortcut_capture(self, shortcut: str) -> None:
         self._is_capturing_shortcut = False
@@ -1298,7 +1548,9 @@ class MainWindow(QMainWindow):
             return
         self.settings_manager.update(
             {
-                "insert_method": str(self.insert_method_combo.currentData() or "clipboard_paste"),
+                "insert_method": str(
+                    self.insert_method_combo.currentData() or "clipboard_paste"
+                ),
                 "restore_clipboard": self.restore_clipboard_checkbox.isChecked(),
             }
         )
@@ -1317,7 +1569,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Startup setting problem", str(exc))
             return
         self.settings_manager.set("start_with_windows", enabled)
-        detail = "Whisper Anywhere will start hidden in the tray when Windows starts." if enabled else "Whisper Anywhere will not start with Windows."
+        detail = (
+            "Whisper Anywhere will start hidden in the tray when Windows starts."
+            if enabled
+            else "Whisper Anywhere will not start with Windows."
+        )
         self.set_status("Ready", detail)
 
     def save_performance_settings(self, prepare: bool = False) -> None:
@@ -1329,7 +1585,9 @@ class MainWindow(QMainWindow):
             return
         self.settings_manager.update(
             {
-                "performance_preset": str(self.performance_combo.currentData() or "balanced"),
+                "performance_preset": str(
+                    self.performance_combo.currentData() or "balanced"
+                ),
                 "device": str(self.device_combo.currentData() or "auto"),
                 "compute_type": str(self.compute_combo.currentData() or "auto"),
                 "cpu_threads": self.cpu_threads_combo.currentData() or "auto",
@@ -1347,10 +1605,15 @@ class MainWindow(QMainWindow):
         if prepare and self.auto_download_checkbox.isChecked():
             self.prepare_selected_model(auto=True)
         elif not self._loading_ui:
-            self.set_status("Ready", "Performance settings saved. Use the shortcut or Prepare model now when ready.")
+            self.set_status(
+                "Ready",
+                "Performance settings saved. Use the shortcut or Prepare model now when ready.",
+            )
 
     def show_first_run_setup(self, force: bool = False) -> None:
-        if not force and bool(self.settings_manager.get("first_run_setup_completed", False)):
+        if not force and bool(
+            self.settings_manager.get("first_run_setup_completed", False)
+        ):
             return
         dialog = FirstRunSetupDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1365,30 +1628,45 @@ class MainWindow(QMainWindow):
                     "shortcut": shortcut,
                     "shortcut_mode": "hold",
                     "selected_model": str(dialog.model_combo.currentData() or "base"),
-                    "microphone_device": str(dialog.mic_combo.currentData() or "default"),
+                    "microphone_device": str(
+                        dialog.mic_combo.currentData() or "default"
+                    ),
                     "device": str(dialog.device_combo.currentData() or "cpu"),
                     "compute_type": "int8",
-                    "use_gpu_if_available": str(dialog.device_combo.currentData() or "cpu") == "gpu",
+                    "use_gpu_if_available": str(
+                        dialog.device_combo.currentData() or "cpu"
+                    )
+                    == "gpu",
                     "first_run_setup_completed": True,
                 }
             )
             self.shortcut_changed.emit(shortcut, "hold")
             self._load_settings_into_ui()
             self._refresh_model_status()
-            self.set_status("Ready", "First-run setup saved. Use the shortcut or Prepare model now when ready.")
+            self.set_status(
+                "Ready",
+                "First-run setup saved. Use the shortcut or Prepare model now when ready.",
+            )
         else:
             if not force:
                 self.settings_manager.set("first_run_setup_completed", True)
-            self.set_status("Ready", "First-run setup cancelled. Current settings are unchanged.")
+            self.set_status(
+                "Ready", "First-run setup cancelled. Current settings are unchanged."
+            )
 
     def check_for_updates(self) -> None:
         self.check_updates_button.setEnabled(False)
-        self.set_status("Checking updates", "Checking the latest GitHub release. No update will be installed automatically.")
+        self.set_status(
+            "Checking updates",
+            "Checking the latest GitHub release. No update will be installed automatically.",
+        )
         threading.Thread(target=self._check_for_updates_worker, daemon=True).start()
 
     def _check_for_updates_worker(self) -> None:
         try:
-            request = urllib.request.Request(GITHUB_RELEASES_API, headers={"User-Agent": "Whisper Anywhere"})
+            request = urllib.request.Request(
+                GITHUB_RELEASES_API, headers={"User-Agent": "Whisper Anywhere"}
+            )
             with urllib.request.urlopen(request, timeout=12) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             latest = str(payload.get("tag_name") or payload.get("name") or "")
@@ -1404,7 +1682,11 @@ class MainWindow(QMainWindow):
         self.check_updates_button.setEnabled(True)
         if not latest:
             self.set_status("Update check failed", detail)
-            QMessageBox.warning(self, "Update check failed", f"Could not check GitHub releases:\n\n{detail}")
+            QMessageBox.warning(
+                self,
+                "Update check failed",
+                f"Could not check GitHub releases:\n\n{detail}",
+            )
             return
         if has_update:
             answer = QMessageBox.question(
@@ -1414,16 +1696,31 @@ class MainWindow(QMainWindow):
             )
             if answer == QMessageBox.StandardButton.Yes:
                 webbrowser.open(detail)
-            self.set_status("Update available", f"Latest release is {latest}. Updates are manual downloads only.")
+            self.set_status(
+                "Update available",
+                f"Latest release is {latest}. Updates are manual downloads only.",
+            )
         else:
-            self.set_status("Up to date", f"Installed version {APP_VERSION}; latest release {latest}.")
-            QMessageBox.information(self, "No update found", f"Whisper Anywhere is up to date.\n\nCurrent: {APP_VERSION}\nLatest: {latest}")
+            self.set_status(
+                "Up to date",
+                f"Installed version {APP_VERSION}; latest release {latest}.",
+            )
+            QMessageBox.information(
+                self,
+                "No update found",
+                f"Whisper Anywhere is up to date.\n\nCurrent: {APP_VERSION}\nLatest: {latest}",
+            )
 
     def _recent_safe_log_lines(self, max_lines: int = 40) -> list[str]:
         lines: list[str] = []
-        for log_path in (self.settings_manager.hotkey_log_path, self.settings_manager.config_dir / "activity.log"):
+        for log_path in (
+            self.settings_manager.hotkey_log_path,
+            self.settings_manager.config_dir / "activity.log",
+        ):
             try:
-                raw_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                raw_lines = log_path.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
             except OSError:
                 continue
             for line in raw_lines[-max_lines:]:
@@ -1435,7 +1732,9 @@ class MainWindow(QMainWindow):
     def diagnostics_text(self) -> str:
         settings = self.settings_manager.portable_export()
         microphone_id = str(self.settings_manager.get("microphone_device", "default"))
-        microphone = self.audio_recorder.input_device_by_id(microphone_id) or self.audio_recorder.input_device_by_id("default")
+        microphone = self.audio_recorder.input_device_by_id(
+            microphone_id
+        ) or self.audio_recorder.input_device_by_id("default")
         payload = {
             "app": "Whisper Anywhere",
             "version": APP_VERSION,
@@ -1457,10 +1756,17 @@ class MainWindow(QMainWindow):
 
     def copy_diagnostics(self) -> None:
         QApplication.clipboard().setText(self.diagnostics_text())
-        self.set_status("Diagnostics copied", "Safe diagnostics were copied to the clipboard.")
+        self.set_status(
+            "Diagnostics copied", "Safe diagnostics were copied to the clipboard."
+        )
 
     def save_diagnostics(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save diagnostics", "Whisper-Anywhere-Diagnostics.json", "JSON files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save diagnostics",
+            "Whisper-Anywhere-Diagnostics.json",
+            "JSON files (*.json)",
+        )
         if not path:
             return
         try:
@@ -1471,29 +1777,47 @@ class MainWindow(QMainWindow):
         self.set_status("Diagnostics saved", "Safe diagnostics were saved.")
 
     def export_settings(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export portable settings", "Whisper-Anywhere-Settings.json", "JSON files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export portable settings",
+            "Whisper-Anywhere-Settings.json",
+            "JSON files (*.json)",
+        )
         if not path:
             return
         try:
-            Path(path).write_text(json.dumps(self.settings_manager.portable_export(), indent=2) + "\n", encoding="utf-8")
+            Path(path).write_text(
+                json.dumps(self.settings_manager.portable_export(), indent=2) + "\n",
+                encoding="utf-8",
+            )
         except OSError as exc:
             QMessageBox.warning(self, "Settings export failed", str(exc))
             return
-        self.set_status("Settings exported", "Portable settings were exported without personal local paths.")
+        self.set_status(
+            "Settings exported",
+            "Portable settings were exported without personal local paths.",
+        )
 
     def import_settings(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import portable settings", "", "JSON files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import portable settings", "", "JSON files (*.json)"
+        )
         if not path:
             return
         try:
             values = json.loads(Path(path).read_text(encoding="utf-8"))
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
-            QMessageBox.warning(self, "Settings import failed", f"Could not import settings:\n\n{exc}")
+            QMessageBox.warning(
+                self, "Settings import failed", f"Could not import settings:\n\n{exc}"
+            )
             return
         self._load_settings_into_ui()
         self._reset_transcriber()
-        self.shortcut_changed.emit(str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q")), str(self.settings_manager.get("shortcut_mode", "hold")))
+        self.shortcut_changed.emit(
+            str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q")),
+            str(self.settings_manager.get("shortcut_mode", "hold")),
+        )
         detail = "Settings imported."
         if ignored:
             detail += f" Ignored local/unknown fields: {', '.join(ignored[:6])}."
@@ -1533,7 +1857,11 @@ class MainWindow(QMainWindow):
         self.shortcut_reminder.setText(f"{self._mode_label()} {shortcut} to talk")
 
     def _mode_label(self) -> str:
-        return "Press" if str(self.settings_manager.get("shortcut_mode", "hold")) == "toggle" else "Hold"
+        return (
+            "Press"
+            if str(self.settings_manager.get("shortcut_mode", "hold")) == "toggle"
+            else "Hold"
+        )
 
     def _select_combo_data(self, combo: QComboBox, value: Any) -> None:
         was_blocked = combo.blockSignals(True)
@@ -1551,7 +1879,10 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if bool(self.settings_manager.get("minimize_to_tray", True)) and not self._force_exit:
+        if (
+            bool(self.settings_manager.get("minimize_to_tray", True))
+            and not self._force_exit
+        ):
             event.ignore()
             self.hide()
             return

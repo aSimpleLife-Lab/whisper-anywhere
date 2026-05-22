@@ -30,8 +30,12 @@ def apply_native_window_icon(hwnd: int) -> None:
     icon_small = 0
     icon_big = 1
 
-    small_icon = windll.user32.LoadImageW(None, icon_path, image_icon, 16, 16, lr_load_from_file)
-    big_icon = windll.user32.LoadImageW(None, icon_path, image_icon, 256, 256, lr_load_from_file)
+    small_icon = windll.user32.LoadImageW(
+        None, icon_path, image_icon, 16, 16, lr_load_from_file
+    )
+    big_icon = windll.user32.LoadImageW(
+        None, icon_path, image_icon, 256, 256, lr_load_from_file
+    )
     if small_icon:
         windll.user32.SendMessageW(hwnd, wm_seticon, icon_small, small_icon)
     if big_icon:

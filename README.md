@@ -36,6 +36,7 @@ To launch automatically after reboot, open the app and enable **Start with Windo
 - Safer settings dropdowns that ignore mouse-wheel changes until opened
 - Optional **Start with Windows hidden in the tray**
 - In-app version display, manual update check, first-run setup with a run-again button, microphone fallback, diagnostics export, portable settings import/export, and optional installer script
+- Dedicated `pytest` test suite for core settings, transcription runtime logic, audio recorder behavior, and text insertion flow
 
 </details>
 
@@ -143,11 +144,34 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 4. Run the app
+### 4. Install test dependencies
+
+```powershell
+pip install -r requirements-dev.txt
+```
+
+### 5. Run the app
 
 ```powershell
 python .\src\main.py
 ```
+
+### 6. Run the automated tests
+
+```powershell
+pytest
+```
+
+The `tests\` suite covers `SettingsManager`, mocked `Transcriber` runtime logic, `AudioRecorder`, and mocked `TextInserter` clipboard behavior without launching the Qt UI.
+
+### 7. Run lint and formatting checks
+
+```powershell
+ruff check src tests
+ruff format --check src tests
+```
+
+`requirements-dev.txt` includes `pytest`, `pytest-mock`, and `ruff` so local quality checks stay separate from the packaged EXE dependencies.
 
 ## How To Test The Shortcut
 

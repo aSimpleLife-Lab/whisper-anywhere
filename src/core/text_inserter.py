@@ -31,7 +31,10 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 user32.GetForegroundWindow.argtypes = ()
 user32.GetForegroundWindow.restype = wintypes.HWND
-user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+user32.GetWindowThreadProcessId.argtypes = (
+    wintypes.HWND,
+    ctypes.POINTER(wintypes.DWORD),
+)
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.c_void_p)
 user32.GetGUIThreadInfo.restype = wintypes.BOOL
@@ -87,7 +90,9 @@ class TextInserter:
             focus_hwnd = None
         return TextTarget(window_hwnd=int(window_hwnd), focus_hwnd=focus_hwnd)
 
-    def insert_text(self, text: str, target: TextTarget | None, settings: dict[str, Any]) -> None:
+    def insert_text(
+        self, text: str, target: TextTarget | None, settings: dict[str, Any]
+    ) -> None:
         prepared = self._prepare_text(text, settings)
         if not prepared:
             return
@@ -97,7 +102,9 @@ class TextInserter:
         if delay_ms > 0:
             time.sleep(delay_ms / 1000)
 
-        self._paste_with_clipboard(prepared, bool(settings.get("restore_clipboard", True)))
+        self._paste_with_clipboard(
+            prepared, bool(settings.get("restore_clipboard", True))
+        )
 
     def _prepare_text(self, text: str, settings: dict[str, Any]) -> str:
         value = " ".join(text.split()).strip()
@@ -113,7 +120,9 @@ class TextInserter:
         if bool(settings.get("auto_punctuation", False)) and value[-1] not in ".!?":
             value += "."
 
-        if bool(settings.get("add_space_after_text", False)) and not value.endswith(" "):
+        if bool(settings.get("add_space_after_text", False)) and not value.endswith(
+            " "
+        ):
             value += " "
 
         if bool(settings.get("press_enter_after_text", False)):
@@ -153,7 +162,9 @@ class TextInserter:
 
     def _set_clipboard_text(self, text: str) -> None:
         if win32clipboard is None or win32con is None:
-            raise TextInsertionError("Clipboard support is unavailable. Reinstall Whisper Anywhere with pywin32 included.")
+            raise TextInsertionError(
+                "Clipboard support is unavailable. Reinstall Whisper Anywhere with pywin32 included."
+            )
         opened = False
         try:
             self._open_clipboard_with_retry()
@@ -161,7 +172,9 @@ class TextInserter:
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
         except Exception as exc:
-            raise TextInsertionError("Could not write to the Windows clipboard. Close clipboard manager apps and try again.") from exc
+            raise TextInsertionError(
+                "Could not write to the Windows clipboard. Close clipboard manager apps and try again."
+            ) from exc
         finally:
             if opened:
                 try:
@@ -171,7 +184,9 @@ class TextInserter:
 
     def _open_clipboard_with_retry(self) -> None:
         if win32clipboard is None:
-            raise TextInsertionError("Clipboard support is unavailable. Reinstall Whisper Anywhere with pywin32 included.")
+            raise TextInsertionError(
+                "Clipboard support is unavailable. Reinstall Whisper Anywhere with pywin32 included."
+            )
         last_error: Exception | None = None
         for attempt in range(CLIPBOARD_RETRIES):
             try:
@@ -186,7 +201,9 @@ class TextInserter:
 
     def _send_ctrl_v(self) -> None:
         if self._keyboard is None or Key is None:
-            raise TextInsertionError("Keyboard control is unavailable. Reinstall Whisper Anywhere with pynput included.")
+            raise TextInsertionError(
+                "Keyboard control is unavailable. Reinstall Whisper Anywhere with pynput included."
+            )
         try:
             with self._keyboard.pressed(Key.ctrl):
                 self._keyboard.press("v")
@@ -224,7 +241,9 @@ class TextInserter:
         attached = False
         try:
             if target_thread and target_thread != current_thread:
-                attached = bool(user32.AttachThreadInput(current_thread, target_thread, True))
+                attached = bool(
+                    user32.AttachThreadInput(current_thread, target_thread, True)
+                )
             user32.SetFocus(focus_hwnd)
         except Exception:
             pass

@@ -92,7 +92,9 @@ class SettingsManager:
 
     def ensure_local_folders(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        Path(str(self.get("model_path"))).expanduser().mkdir(parents=True, exist_ok=True)
+        Path(str(self.get("model_path"))).expanduser().mkdir(
+            parents=True, exist_ok=True
+        )
 
     def load(self) -> dict[str, Any]:
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -167,7 +169,9 @@ class SettingsManager:
                 continue
             exported[path_key] = ""
         exported["start_with_windows"] = False
-        exported["settings_schema_version"] = DEFAULT_SETTINGS["settings_schema_version"]
+        exported["settings_schema_version"] = DEFAULT_SETTINGS[
+            "settings_schema_version"
+        ]
         return exported
 
     def import_portable(self, values: dict[str, Any]) -> list[str]:
@@ -202,14 +206,21 @@ class SettingsManager:
         if hotkey_version < 2 and shortcut_value == "ctrl+win":
             migrated["shortcut"] = "Ctrl+Win+Space"
             hotkey_version = 2
-        if hotkey_version < 3 and shortcut_value in {"", "ctrl+win", "ctrl+win+space", "ctrl+alt+q"}:
+        if hotkey_version < 3 and shortcut_value in {
+            "",
+            "ctrl+win",
+            "ctrl+win+space",
+            "ctrl+alt+q",
+        }:
             migrated["shortcut"] = "Ctrl+Alt+Q"
             hotkey_version = 3
         if hotkey_version:
             migrated["hotkey_default_version"] = hotkey_version
         runtime_version = int(migrated.get("runtime_default_version") or 0)
         if runtime_version < 2:
-            if str(migrated.get("device", "auto")) == "auto" and bool(migrated.get("use_gpu_if_available", True)):
+            if str(migrated.get("device", "auto")) == "auto" and bool(
+                migrated.get("use_gpu_if_available", True)
+            ):
                 migrated["device"] = "cpu"
                 migrated["compute_type"] = "int8"
                 migrated["use_gpu_if_available"] = False
@@ -220,21 +231,49 @@ class SettingsManager:
             migrated["device"] = "gpu" if bool(migrated.get("use_gpu")) else "auto"
         if "use_gpu_if_available" not in migrated and "use_gpu" in migrated:
             migrated["use_gpu_if_available"] = bool(migrated.get("use_gpu"))
-        if str(migrated.get("start_sound_path", "")).lower() == r"c:\users\ben\downloads\startsound.mp3":
+        if (
+            str(migrated.get("start_sound_path", "")).lower()
+            == r"c:\users\ben\downloads\startsound.mp3"
+        ):
             migrated["start_sound_path"] = ""
-        if str(migrated.get("stop_sound_path", "")).lower() == r"c:\users\ben\downloads\stopsound.mp3":
+        if (
+            str(migrated.get("stop_sound_path", "")).lower()
+            == r"c:\users\ben\downloads\stopsound.mp3"
+        ):
             migrated["stop_sound_path"] = ""
         return migrated
 
     def _normalize(self, values: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(values)
-        if normalized.get("selected_model") not in {"tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo", "large-v3-turbo"}:
+        if normalized.get("selected_model") not in {
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large",
+            "large-v2",
+            "large-v3",
+            "turbo",
+            "large-v3-turbo",
+        }:
             normalized["selected_model"] = "base"
         if normalized.get("device") not in {"auto", "cpu", "gpu"}:
             normalized["device"] = "auto"
-        if normalized.get("compute_type") not in {"auto", "int8", "int8_float16", "float16", "float32"}:
+        if normalized.get("compute_type") not in {
+            "auto",
+            "int8",
+            "int8_float16",
+            "float16",
+            "float32",
+        }:
             normalized["compute_type"] = "auto"
-        if normalized.get("performance_preset") not in {"fast", "balanced", "accurate", "low_ram", "low_vram"}:
+        if normalized.get("performance_preset") not in {
+            "fast",
+            "balanced",
+            "accurate",
+            "low_ram",
+            "low_vram",
+        }:
             normalized["performance_preset"] = "balanced"
         if normalized.get("insert_method") != "clipboard_paste":
             normalized["insert_method"] = "clipboard_paste"

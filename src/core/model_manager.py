@@ -30,14 +30,72 @@ MODEL_ORDER = [
 ]
 
 MODEL_INFO: dict[str, WhisperModelInfo] = {
-    "tiny": WhisperModelInfo("tiny", "tiny", "39 MB", "Fastest", "Lowest", "Very low RAM", "Quick notes on slower PCs"),
-    "base": WhisperModelInfo("base", "base", "74 MB", "Fast", "Basic", "Low RAM", "Default balanced starter"),
-    "small": WhisperModelInfo("small", "small", "244 MB", "Balanced", "Good", "Moderate RAM", "General voice typing"),
-    "medium": WhisperModelInfo("medium", "medium", "769 MB", "Moderate", "Very good", "Higher RAM", "Better dictation quality"),
-    "large": WhisperModelInfo("large", "large", "1550 MB", "Slow", "High", "High RAM/VRAM", "Accuracy over speed"),
-    "large-v2": WhisperModelInfo("large-v2", "large-v2", "1550 MB", "Slow", "Higher", "High RAM/VRAM", "Difficult audio"),
-    "large-v3": WhisperModelInfo("large-v3", "large-v3", "1550 MB", "Slow", "Highest", "High RAM/VRAM", "Best local quality"),
-    "turbo": WhisperModelInfo("turbo", "large-v3-turbo", "809 MB", "Fast", "High", "Moderate VRAM", "Fast high-quality dictation"),
+    "tiny": WhisperModelInfo(
+        "tiny",
+        "tiny",
+        "39 MB",
+        "Fastest",
+        "Lowest",
+        "Very low RAM",
+        "Quick notes on slower PCs",
+    ),
+    "base": WhisperModelInfo(
+        "base", "base", "74 MB", "Fast", "Basic", "Low RAM", "Default balanced starter"
+    ),
+    "small": WhisperModelInfo(
+        "small",
+        "small",
+        "244 MB",
+        "Balanced",
+        "Good",
+        "Moderate RAM",
+        "General voice typing",
+    ),
+    "medium": WhisperModelInfo(
+        "medium",
+        "medium",
+        "769 MB",
+        "Moderate",
+        "Very good",
+        "Higher RAM",
+        "Better dictation quality",
+    ),
+    "large": WhisperModelInfo(
+        "large",
+        "large",
+        "1550 MB",
+        "Slow",
+        "High",
+        "High RAM/VRAM",
+        "Accuracy over speed",
+    ),
+    "large-v2": WhisperModelInfo(
+        "large-v2",
+        "large-v2",
+        "1550 MB",
+        "Slow",
+        "Higher",
+        "High RAM/VRAM",
+        "Difficult audio",
+    ),
+    "large-v3": WhisperModelInfo(
+        "large-v3",
+        "large-v3",
+        "1550 MB",
+        "Slow",
+        "Highest",
+        "High RAM/VRAM",
+        "Best local quality",
+    ),
+    "turbo": WhisperModelInfo(
+        "turbo",
+        "large-v3-turbo",
+        "809 MB",
+        "Fast",
+        "High",
+        "Moderate VRAM",
+        "Fast high-quality dictation",
+    ),
 }
 
 MODEL_ALIASES = {
@@ -58,7 +116,9 @@ class ModelManager:
         return MODEL_ALIASES.get(model_name, model_name)
 
     def selected_model(self) -> str:
-        selected = self.normalize_model_name(str(self.settings_manager.get("selected_model", "base")))
+        selected = self.normalize_model_name(
+            str(self.settings_manager.get("selected_model", "base"))
+        )
         if selected not in MODEL_INFO:
             selected = "base"
             self.settings_manager.set("selected_model", selected)
@@ -80,7 +140,10 @@ class ModelManager:
         return MODEL_INFO[selected].backend_name
 
     def is_large_model(self, model_name: str | None = None) -> bool:
-        return self.normalize_model_name(model_name or self.selected_model()) in LARGE_MODELS
+        return (
+            self.normalize_model_name(model_name or self.selected_model())
+            in LARGE_MODELS
+        )
 
     def model_storage_path(self) -> Path:
         path = Path(str(self.settings_manager.get("model_path"))).expanduser()

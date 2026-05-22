@@ -68,7 +68,14 @@ def main() -> int:
         settings_manager.get("stop_sound_path", ""),
     )
 
-    window = MainWindow(settings_manager, model_manager, audio_recorder, transcriber, text_inserter, startup_manager)
+    window = MainWindow(
+        settings_manager,
+        model_manager,
+        audio_recorder,
+        transcriber,
+        text_inserter,
+        startup_manager,
+    )
     if startup_sync_error:
         window.set_status("Startup setting problem", startup_sync_error)
     tray = TrayManager(model_manager)
