@@ -1417,6 +1417,7 @@ class MainWindow(QMainWindow):
         self._append_activity_log(
             f"transcription timeout id={request_id} path={audio_path}"
         )
+        self._delete_temp_audio(audio_path)
         self._reset_transcriber()
         self.set_status(
             "Error",
