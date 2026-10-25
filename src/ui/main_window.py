@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -244,6 +245,95 @@ class _TitleBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
+def _tutorial_pages(shortcut: str) -> list[tuple[str, str]]:
+    return [
+        (
+            "Talk, let go, it types",
+            f"Click into any text box: a chat, an email, a document or a game's chat. Hold {shortcut} and "
+            "speak. When you let go, your words are typed where the cursor is.\n\nRather press once to start "
+            "and again to stop? Pick Toggle next to the shortcut. Esc cancels a recording.",
+        ),
+        (
+            "Watch it listen",
+            "While you speak, the voxel columns rise with your voice and the wheel counts the seconds. The "
+            "cyan scanner means your words are being turned into text, usually in well under a second.\n\n"
+            "The tray icon gets an orange dot while it listens and a cyan dot while it works. The Dictation on "
+            "switch pauses the shortcut.",
+        ),
+        (
+            "Speech models",
+            "Voz is the recommended model: fast and accurate, with punctuation, for 25 European languages, and "
+            "it needs no GPU. It downloads once, about 385 MB. For other languages, pick a Whisper model in the "
+            "list on the left.\n\nIf a download cannot finish, the message under the list says why and links "
+            "to the files, so you can download them in your browser instead.",
+        ),
+        (
+            "Typing options and games",
+            "The switches on the right decide how the text arrives: keep your clipboard, add a space, press "
+            "Enter to send chat messages, capitalize, end with a full stop.\n\nIn full-screen games the words "
+            "are typed in for you; open the game's chat box before you speak. An app running as administrator "
+            "only accepts typing if Whisper Anywhere runs as administrator too.",
+        ),
+        (
+            "Sounds, privacy and the tray",
+            "Sound effects sets the volume of the start and stop sounds; 0 turns them off. Recordings stay in "
+            "memory and are never saved to disk.\n\nClosing the window keeps Whisper Anywhere in the tray, so "
+            "the shortcut keeps working. The gear opens Settings: Start with Windows and diagnostics.\n\n"
+            "This tour shows once. To see it again, click the orange ! at the top of the window.",
+        ),
+    ]
+
+
+class TutorialDialog(ShellDialog):
+    """A five-step tour; shown once after setup, replayed from the ! button or Settings."""
+
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent, "How Whisper Anywhere works", "Five quick steps.", width=500)
+        shortcut = str(parent.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
+        self.pages = QStackedWidget()
+        for title, text in _tutorial_pages(shortcut):
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(10)
+            layout.addWidget(CubeTitle(title, "columnTitle"))
+            layout.addWidget(label(text, "muted", wrap=True))
+            layout.addStretch(1)
+            self.pages.addWidget(page)
+        self.pages.setMinimumHeight(190)
+        self.body.addWidget(self.pages)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.dots: list[QLabel] = []
+        for _ in range(self.pages.count()):
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            self.dots.append(dot)
+            row.addWidget(dot)
+        row.addStretch(1)
+        self.back_button = button("Back")
+        self.next_button = button("Next", "primary")
+        self.back_button.clicked.connect(lambda checked=False: self._go(-1))
+        self.next_button.clicked.connect(lambda checked=False: self._go(1))
+        row.addWidget(self.back_button)
+        row.addWidget(self.next_button)
+        self.body.addLayout(row)
+        self._go(0)
+
+    def _go(self, step: int) -> None:
+        index = self.pages.currentIndex() + step
+        if index >= self.pages.count():
+            self.accept()
+            return
+        index = max(0, index)
+        self.pages.setCurrentIndex(index)
+        for position, dot in enumerate(self.dots):  # voxel step dots: orange for this step
+            dot.setStyleSheet(f"background: {'#EA8A2B' if position == index else '#2C2C2C'}; border-radius: 2px;")
+        self.back_button.setEnabled(index > 0)
+        self.next_button.setText("Done" if index == self.pages.count() - 1 else "Next")
+
+
 class FirstRunSetupDialog(ShellDialog):
     def __init__(self, parent: "MainWindow") -> None:
         super().__init__(
@@ -345,8 +435,10 @@ class SettingsWindow(ShellDialog):
         self.run_setup_button = button("Run setup again")
         self.open_settings_folder_button = button("Open settings folder")
         self.open_model_folder_button = button("Open model folder")
+        self.tutorial_button = button("How it works")
         for index, widget in enumerate(
             (
+                self.tutorial_button,
                 self.check_updates_button,
                 self.run_setup_button,
                 self.copy_diagnostics_button,
@@ -452,6 +544,7 @@ class MainWindow(QMainWindow):
         self._model_progress_timer = QTimer(self)
         self._model_progress_timer.setInterval(1000)
         self._model_progress_timer.timeout.connect(self._tick_model_progress)
+        self._tutorial_pending = False
         self._warm_up_timer = QTimer(self)
         self._warm_up_timer.setSingleShot(True)
         self._warm_up_timer.setInterval(WARM_UP_DELAY_MS)
@@ -522,12 +615,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(_logo(20))
         layout.addWidget(label("Whisper Anywhere", "windowTitle"))
         layout.addStretch(1)
+        self.help_button = button("!", "caption")
+        self.help_button.setToolTip("Would you like to replay the tutorial?")
+        self.help_button.setAccessibleName("Replay the tutorial")
+        self.help_button.setStyleSheet(
+            'font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 16px; font-weight: 700; color: #EA8A2B;'
+        )
         self.settings_button = button(GLYPHS["settings"], "caption")
         self.settings_button.setToolTip("Settings")
         self.minimize_button = button(GLYPHS["minimize"], "caption")
         self.maximize_button = button(GLYPHS["maximize"], "caption")
         self.close_button = button(GLYPHS["close"], "captionClose")
-        for widget in (self.settings_button, self.minimize_button, self.maximize_button, self.close_button):
+        for widget in (
+            self.help_button,
+            self.settings_button,
+            self.minimize_button,
+            self.maximize_button,
+            self.close_button,
+        ):
             widget.setCursor(Qt.CursorShape.ArrowCursor)
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             layout.addWidget(widget)
@@ -825,6 +930,21 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.horizon.set_animated(True)
+        # Existing installs see the tour once, the first time the window is actually
+        # opened (never on a tray-only start, so it cannot pop up over a game).
+        if (
+            not self._tutorial_pending
+            and bool(self.settings_manager.get("first_run_setup_completed", False))
+            and not bool(self.settings_manager.get("tutorial_seen", False))
+        ):
+            self._tutorial_pending = True
+            QTimer.singleShot(700, self.show_tutorial)
+
+    def show_tutorial(self, force: bool = False) -> None:
+        if not force and bool(self.settings_manager.get("tutorial_seen", False)):
+            return
+        self.settings_manager.set("tutorial_seen", True)
+        TutorialDialog(self).exec()
 
     def hideEvent(self, event) -> None:
         self.horizon.set_animated(False)
@@ -833,6 +953,7 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------------- signals
 
     def _connect_signals(self) -> None:
+        self.help_button.clicked.connect(lambda checked=False: self.show_tutorial(force=True))
         self.settings_button.clicked.connect(lambda checked=False: self.open_settings_window())
         self.minimize_button.clicked.connect(lambda checked=False: self.showMinimized())
         self.maximize_button.clicked.connect(lambda checked=False: self.toggle_maximized())
@@ -880,6 +1001,7 @@ class MainWindow(QMainWindow):
         settings.start_with_windows.switch.toggled.connect(lambda checked=False: self.save_startup_settings())
         settings.keep_in_tray.switch.toggled.connect(lambda checked=False: self.save_tray_setting())
         settings.debug_log.switch.toggled.connect(lambda checked=False: self.save_debug_log_setting())
+        settings.tutorial_button.clicked.connect(lambda checked=False: self.show_tutorial(force=True))
         settings.check_updates_button.clicked.connect(lambda checked=False: self.check_for_updates())
         settings.copy_diagnostics_button.clicked.connect(lambda checked=False: self.copy_diagnostics())
         settings.save_diagnostics_button.clicked.connect(lambda checked=False: self.save_diagnostics())
@@ -1694,6 +1816,7 @@ class MainWindow(QMainWindow):
             if not force:
                 self.settings_manager.set("first_run_setup_completed", True)
             self.set_status("Ready", "Setup skipped. Current settings are unchanged.")
+            self.show_tutorial()
             return
         shortcut = dialog.shortcut_input.text().strip() or "Ctrl+Alt+Q"
         try:
@@ -1722,6 +1845,7 @@ class MainWindow(QMainWindow):
         self.prepare_selected_model(auto=True)
         self._schedule_warm_up()
         self.set_status("Ready", f"Setup saved. {self._ready_detail()}")
+        self.show_tutorial()  # the model downloads in the background meanwhile
 
     # ------------------------------------------------------- updates, support
 
