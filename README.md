@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.0.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.0/WhisperAnywhere-Setup-0.2.0.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.1.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.1/WhisperAnywhere-Setup-0.2.1.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu.
@@ -32,7 +32,17 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.0</strong> - Voz speech model, new interface, faster and more private</summary>
+<summary><strong>Current build - v0.2.1</strong> - model downloads that work on more networks, and say why when they cannot</summary>
+
+- Fixed: on networks that block or silently drop traffic to Hugging Face (firewalls, antivirus, VPNs, DNS filters), the Voz download sat at "0 of 384 MB" for minutes and then only said to check the internet connection
+- Voz now downloads with its own resumable downloader: a stalled connection gives up after 30 seconds (three tries), an interrupted download resumes where it stopped, and the progress line says "Connecting" until data arrives
+- Download errors name the cause (no reply, DNS lookup failed, connection refused, secure connection blocked, or an HTTP error) and link to the files, so Voz can also be downloaded in a browser and dropped into the model folder
+- Whisper model errors also name the underlying cause
+
+</details>
+
+<details>
+<summary><strong>v0.2.0</strong> - Voz speech model, new interface, faster and more private</summary>
 
 - **Voz** ([desert-ant-labs/voz](https://huggingface.co/desert-ant-labs/voz), NVIDIA Parakeet TDT 0.6B v3) is the new default model: punctuated, capitalized text in 25 European languages, on the CPU, no GPU needed
 - Voz runs on ONNX Runtime with graphs rewritten for desktop CPUs (length-sized encoder windows, single-lane decoding, float32). On a Ryzen 9 5950X a 3 s clip transcribes in 0.12 s, 8 s in 0.2 s, 36 s in 0.9 s
@@ -400,7 +410,11 @@ Use `Auto` or `CPU`, or keep **Fall back to the CPU** on. GPU transcription requ
 
 ### Model download fails
 
-Check internet access, available disk space, and permissions for `%LOCALAPPDATA%\Whisper Anywhere\models`.
+The message under the model list says why. The usual causes are a firewall or antivirus blocking Whisper Anywhere (allow it, or add it as an exception), a VPN or DNS filter, or a network that blocks huggingface.co.
+
+You can also install Voz by hand: from [huggingface.co/desert-ant-labs/voz (folder web)](https://huggingface.co/desert-ant-labs/voz/tree/12802bf4e2b5e97e1289b723bc6283b6f1a1ace5/web), download `meta.json`, `vocab.json`, `embedding.f16`, `encoder.onnx`, `encoder.onnx.data` and `decoder.onnx` in your browser (the WebGPU decoder is not needed) and put them in `%LOCALAPPDATA%\Whisper Anywhere\models\voz\web`. The app notices them and shows Voz as installed.
+
+Also check available disk space and permissions for `%LOCALAPPDATA%\Whisper Anywhere\models`.
 
 ## Disclaimer
 

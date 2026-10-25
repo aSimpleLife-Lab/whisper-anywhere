@@ -27,6 +27,18 @@ class TranscriptionError(RuntimeError):
     pass
 
 
+def _failure_reason(exc: BaseException) -> str:
+    """The underlying cause in words, so a failed download says why instead of a generic hint."""
+    root, depth = exc, 0
+    while (root.__cause__ or root.__context__) is not None and depth < 10:
+        root, depth = root.__cause__ or root.__context__, depth + 1
+    if isinstance(root, OSError):
+        from core.voz_engine import describe_download_error
+
+        return describe_download_error(root)
+    return f"({type(root).__name__}: {root}) Check your internet connection, disk space, and model folder permissions."
+
+
 def default_cpu_threads() -> int:
     """Physical cores, roughly: SMT siblings only slow these models down."""
     return max(4, min(16, (os.cpu_count() or 8) // 2))
@@ -211,11 +223,17 @@ class Transcriber:
             if voz_engine.missing_files(model_path):
                 self._enable_system_certificate_store()
                 voz_engine.download_bundle(model_path)
+        except voz_engine.VozError as exc:
+            raise TranscriptionError(
+                f"Voz could not download. {exc} You can also download {', '.join(voz_engine.BUNDLE_FILES)} "
+                f"in your browser from {voz_engine.HF_FILES_URL} and put them in {voz_engine.bundle_path(model_path)}."
+            ) from exc
+        try:
             model = voz_engine.VozModel(model_path, cpu_threads=threads)
             model.warm_up()
         except Exception as exc:
             raise TranscriptionError(
-                "Voz could not be downloaded or loaded. Check your internet connection, disk space, and the model folder."
+                f"Voz could not be loaded ({type(exc).__name__}: {exc}). Check disk space and the model folder."
             ) from exc
         self._model = model
         self._loaded_key = key
@@ -355,7 +373,7 @@ class Transcriber:
                     "The selected Whisper model could not load on GPU. Turn on CPU fallback or select CPU only."
                 ) from exc
             raise TranscriptionError(
-                "The selected Whisper model could not be loaded or downloaded. Check your internet connection, disk space, and model folder permissions."
+                f"The selected Whisper model could not be loaded or downloaded. {_failure_reason(exc)}"
             ) from exc
 
     def _load_funasr_model(self, settings: dict[str, Any], model_name: str):

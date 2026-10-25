@@ -9,7 +9,14 @@ cut at pauses, and TDT greedy decoding with one decoder lane per window.
 
 from __future__ import annotations
 
+import http.client
 import json
+import os
+import socket
+import ssl
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,24 +74,83 @@ def missing_files(model_root: str | Path) -> list[str]:
     ]
 
 
+HF_BASE = "https://huggingface.co"
+HF_FILES_URL = f"{HF_BASE}/{REPO_ID}/tree/{REVISION}/{BUNDLE_DIR}"
+READ_TIMEOUT = 30.0  # seconds without any data before an attempt gives up
+ATTEMPTS = 3
+
+
 def download_bundle(model_root: str | Path) -> Path:
-    """Fetch the ONNX bundle (about 385 MB) pinned to a known revision."""
+    """Fetch the ONNX bundle (about 385 MB) pinned to a known revision.
+
+    A plain resumable HTTP download rather than huggingface_hub: its hidden
+    retries kept a blocked network on "0 MB" for minutes and then reported only
+    a closed client. Here a silent network fails within about a minute and a
+    half, and the error says why. urllib uses the Windows proxy settings and
+    certificate store, so antivirus HTTPS scanning still works.
+    """
     missing = missing_files(model_root)
-    if not missing:
-        return bundle_path(model_root)
-    try:
-        from huggingface_hub import hf_hub_download
-    except Exception as exc:  # pragma: no cover - ships with faster-whisper
-        raise VozError("huggingface_hub is missing, so Voz cannot download.") from exc
-    target = Path(model_root).expanduser() / "voz"
+    folder = bundle_path(model_root)
+    folder.mkdir(parents=True, exist_ok=True)
     for name in missing:
-        hf_hub_download(
-            REPO_ID, f"{BUNDLE_DIR}/{name}", revision=REVISION, local_dir=target
-        )
+        _download_file(f"{BUNDLE_DIR}/{name}", folder / name, BUNDLE_FILES[name])
     missing = missing_files(model_root)
     if missing:
         raise VozError(f"The Voz download is incomplete: {', '.join(missing)}")
-    return bundle_path(model_root)
+    return folder
+
+
+def _download_file(remote: str, target: Path, size: int) -> None:
+    part = target.with_name(target.name + ".part")
+    url = f"{HF_BASE}/{REPO_ID}/resolve/{REVISION}/{remote}"
+    context = ssl.create_default_context()  # loads the Windows certificate store
+    last_error: Exception | None = None
+    for attempt in range(ATTEMPTS):
+        have = part.stat().st_size if part.exists() else 0
+        if have > size:
+            part.unlink()
+            have = 0
+        headers = {"User-Agent": "Whisper Anywhere"}
+        if have:
+            headers["Range"] = f"bytes={have}-"  # resume what an earlier try left
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=READ_TIMEOUT, context=context) as response:
+                if have and response.status != 206:
+                    have = 0  # the server ignored the range: start over
+                with part.open("ab" if have else "wb") as out:
+                    while chunk := response.read(1 << 20):
+                        out.write(chunk)
+            if part.stat().st_size == size:
+                os.replace(part, target)
+                return
+            last_error = VozError(f"{remote} arrived incomplete")
+        except (OSError, http.client.HTTPException) as exc:  # URLError and timeouts are OSErrors
+            last_error = exc
+        if attempt + 1 < ATTEMPTS:
+            time.sleep(2 * (attempt + 1))
+    raise VozError(describe_download_error(last_error)) from last_error
+
+
+def describe_download_error(exc: BaseException | None) -> str:
+    """Turn a network failure into a reason a person can act on."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"huggingface.co answered with error {exc.code}."
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, TimeoutError):
+        return (
+            "huggingface.co did not respond. A firewall, antivirus, VPN or network filter may be "
+            "blocking Whisper Anywhere, or the connection is very slow."
+        )
+    if isinstance(reason, socket.gaierror):
+        return "This PC could not look up huggingface.co. Check the internet connection, VPN or DNS filter."
+    if isinstance(reason, ssl.SSLError):
+        return "The secure connection to huggingface.co failed. Antivirus HTTPS scanning or a proxy may be interfering."
+    if isinstance(reason, ConnectionRefusedError):
+        return "The connection to huggingface.co was refused. A firewall or proxy may be blocking it."
+    if isinstance(reason, ConnectionError):
+        return "The connection to huggingface.co kept dropping. Check the internet connection."
+    return f"The download failed: {reason}"
 
 
 @dataclass
