@@ -19,10 +19,10 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.1.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.1/WhisperAnywhere-Setup-0.2.1.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.2.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.2/WhisperAnywhere-Setup-0.2.2.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
-2. Start Whisper Anywhere from the Start menu.
+2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
 3. Click into any app, hold `Ctrl + Alt + Q` (or the mouse button you pick), speak, and let go.
 
 The app downloads speech models on first use (Voz is about 385 MB), so the first setup takes a little while.
@@ -32,7 +32,15 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.1</strong> - model downloads that work on more networks, and say why when they cannot</summary>
+<summary><strong>Current build - v0.2.2</strong> - a tour of the app</summary>
+
+- **New tour**: five short steps explain the shortcut, what the window shows while it listens, the speech models, the typing options (including games) and the sounds, privacy and tray. It shows once, after setup or the first time the window opens after updating, never on a hidden start in the tray
+- An orange **!** in the title bar replays the tour (hover it: "Would you like to replay the tutorial?"), and so does **How it works** in Settings
+
+</details>
+
+<details>
+<summary><strong>v0.2.1</strong> - model downloads that work on more networks, and say why when they cannot</summary>
 
 - Fixed: on networks that block or silently drop traffic to Hugging Face (firewalls, antivirus, VPNs, DNS filters), the Voz download sat at "0 of 384 MB" for minutes and then only said to check the internet connection
 - Voz now downloads with its own resumable downloader: a stalled connection gives up after 30 seconds (three tries), an interrupted download resumes where it stopped, and the progress line says "Connecting" until data arrives
@@ -104,6 +112,7 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 - Global hold-to-talk shortcut: `Ctrl + Alt + Q` or a mouse button (M3, M4, M5, or M1/M2 with a modifier), with optional toggle mode and a pause switch
 - Click-to-record shortcut selection
 - First-run setup for shortcut, model, microphone, and CPU/GPU choice, plus **Run setup again**
+- A five-step tour after setup, replayed from the orange **!** in the title bar or **How it works** in Settings
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
 - Speech models: **Voz** (default), Whisper Tiny, Base, Small, Medium, Large, Large v2, Large v3, Turbo, plus optional FunASR SenseVoice Small and Fun-ASR Nano

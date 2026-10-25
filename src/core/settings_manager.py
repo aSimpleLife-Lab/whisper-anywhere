@@ -30,6 +30,7 @@ def default_model_path() -> str:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": 2,
     "first_run_setup_completed": False,
+    "tutorial_seen": False,
     "selected_model": "voz",
     "microphone_device": "default",
     "microphone_name": "",
