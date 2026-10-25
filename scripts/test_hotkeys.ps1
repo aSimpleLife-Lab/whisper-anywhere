@@ -2,8 +2,8 @@ param(
     [ValidateSet("Source", "Exe")]
     [string]$Mode = "Exe",
 
-    [ValidateSet("Ctrl+Win", "Ctrl+Win+Space")]
-    [string]$Shortcut = "Ctrl+Win+Space",
+    [ValidateSet("Ctrl+Alt+Q", "Ctrl+Win", "Ctrl+Win+Space")]
+    [string]$Shortcut = "Ctrl+Alt+Q",
 
     [string]$ExePath = "",
 
@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $appDataDir = Join-Path $env:APPDATA "Whisper Anywhere"
 $settingsPath = Join-Path $appDataDir "settings.json"
-$logPath = Join-Path $appDataDir "hotkey.log"
+$logPath = Join-Path $appDataDir "debug.log"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
 
@@ -36,7 +36,9 @@ if (-not $settings.Contains("restore_clipboard")) { $settings["restore_clipboard
 
 $settings["shortcut"] = $Shortcut
 $settings["shortcut_mode"] = "hold"
-$settings["hotkey_default_version"] = 2
+# Version 3 stops the settings migration from swapping the shortcut under test.
+$settings["hotkey_default_version"] = 3
+$settings["debug_logs"] = $true
 
 $settings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
 
@@ -70,18 +72,18 @@ Write-Host "3. Speak a short phrase."
 Write-Host "4. Release $Shortcut."
 Write-Host "5. Watch this console and the app status for hook/key transition logs."
 Write-Host ""
-Write-Host "Hotkey log: $logPath"
+Write-Host "Debug log: $logPath"
 Write-Host "Process id: $($process.Id)"
 Write-Host ""
 
 $deadline = (Get-Date).AddSeconds($Seconds)
 while ((Get-Date) -lt $deadline) {
     if (Test-Path $logPath) {
-        Write-Host "---- hotkey.log tail $(Get-Date -Format 'HH:mm:ss') ----"
+        Write-Host "---- debug.log tail $(Get-Date -Format 'HH:mm:ss') ----"
         Get-Content -LiteralPath $logPath -Tail 20
     }
     else {
-        Write-Host "Waiting for hotkey.log..."
+        Write-Host "Waiting for debug.log..."
     }
     Start-Sleep -Seconds 5
 }

@@ -17,12 +17,19 @@ env/
 # Build outputs
 build/
 dist/
+build-lite/
+dist-lite/
+dist-installer/
 *.spec.bak
 
 # Local runtime files
 *.log
 *.wav
+!assets/sounds/*.wav
 *.tmp
+# Local scratch: benchmarks with speech recordings, and the design prompt with local paths
+work/
+docs/claude-design-prompt.md
 settings.json
 logs/
 models/

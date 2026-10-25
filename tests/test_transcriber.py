@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from core.settings_manager import DEFAULT_SETTINGS
-from core.transcriber import RuntimeOptions, Transcriber
+from core.model_manager import MODEL_INFO
+from core.transcriber import (
+    RuntimeOptions,
+    Transcriber,
+    default_cpu_threads,
+    temporary_wav,
+)
 
 
 class FakeModelManager:
@@ -29,6 +37,13 @@ class FakeModelManager:
             return "large-v3-turbo"
         return selected
 
+    def selected_info(self):
+        return MODEL_INFO[self._selected_model]
+
+    def model_engine(self, model_name: str | None = None) -> str:
+        selected = model_name or self._selected_model
+        return MODEL_INFO[selected].engine
+
 
 def make_settings(tmp_path, **overrides):
     settings = dict(DEFAULT_SETTINGS)
@@ -43,6 +58,7 @@ def make_settings(tmp_path, **overrides):
             "low_ram_mode": False,
             "low_vram_mode": False,
             "cpu_threads": "auto",
+            "keep_model_loaded": True,
             "language_mode": "auto",
             "forced_language": "",
             "translate_to_english": False,
@@ -55,6 +71,12 @@ def make_settings(tmp_path, **overrides):
 def install_fake_whisper(monkeypatch: pytest.MonkeyPatch, whisper_model_class) -> None:
     monkeypatch.setitem(
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=whisper_model_class)
+    )
+
+
+def install_fake_funasr(monkeypatch: pytest.MonkeyPatch, automodel_class) -> None:
+    monkeypatch.setitem(
+        sys.modules, "funasr", SimpleNamespace(AutoModel=automodel_class)
     )
 
 
@@ -183,5 +205,211 @@ def test_transcribe_retries_on_cpu_when_gpu_transcription_fails(
         transcriber.runtime_message
         == "GPU transcription failed, so Whisper Anywhere continued on CPU with safe int8 precision."
     )
+    assert transcriber._model is not None
+    assert transcriber._loaded_key is not None
+    assert transcriber._loaded_key[0] == "whisper"
+    assert transcriber._loaded_key[3] == "cpu"
+
+
+def test_transcribe_unloads_model_when_keep_loaded_is_disabled(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeSegment:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeWhisperModel:
+        def transcribe(self, audio_path: str, **kwargs):
+            return [FakeSegment("hello")], {"language": "en"}
+
+        def __init__(self, backend_name: str, **kwargs) -> None:
+            self.kwargs = dict(kwargs)
+
+    install_fake_whisper(monkeypatch, FakeWhisperModel)
+
+    transcriber = Transcriber(FakeModelManager())
+    monkeypatch.setattr(transcriber, "_cuda_available", lambda: False)
+    monkeypatch.setattr(
+        transcriber, "_supported_compute_types", lambda device: {"int8", "float32"}
+    )
+    monkeypatch.setattr(transcriber, "_looks_like_silence", lambda audio_path: False)
+
+    text = transcriber.transcribe(
+        "clip.wav", make_settings(tmp_path, device="cpu", keep_model_loaded=False)
+    )
+
+    assert text == "hello"
     assert transcriber._model is None
     assert transcriber._loaded_key is None
+
+
+def test_transcribe_with_funasr_uses_automodel_and_cleans_tags(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = []
+    generated = []
+
+    class FakeFunASRModel:
+        def __init__(self, **kwargs) -> None:
+            created.append(dict(kwargs))
+
+        def generate(self, **kwargs):
+            generated.append(dict(kwargs))
+            return [{"text": "<|en|><|NEUTRAL|><|Speech|><|withitn|> hello funasr "}]
+
+    install_fake_funasr(monkeypatch, FakeFunASRModel)
+    monkeypatch.setattr(Transcriber, "_looks_like_silence", lambda self, path: False)
+
+    manager = FakeModelManager("sensevoice-small")
+    transcriber = Transcriber(manager)
+
+    text = transcriber.transcribe(
+        "clip.wav",
+        make_settings(tmp_path, device="cpu", selected_model="sensevoice-small"),
+    )
+    text_again = transcriber.transcribe(
+        "clip.wav",
+        make_settings(tmp_path, device="cpu", selected_model="sensevoice-small"),
+    )
+
+    assert text == "hello funasr"
+    assert text_again == "hello funasr"
+    assert created == [
+        {
+            "model": "FunAudioLLM/SenseVoiceSmall",
+            "device": "cpu",
+            "disable_update": True,
+            "disable_pbar": True,
+            "disable_log": True,
+            "ncpu": default_cpu_threads(),
+            "hub": "hf",
+            "vad_model": "fsmn-vad",
+            "vad_kwargs": {"max_single_segment_time": 30000},
+        }
+    ]
+    assert (
+        generated
+        == [
+            {
+                "input": "clip.wav",
+                "cache": {},
+                "use_itn": True,
+                "batch_size_s": 60,
+                "disable_pbar": True,
+                "disable_log": True,
+                "merge_vad": True,
+                "merge_length_s": 15,
+                "language": "auto",
+            }
+        ]
+        * 2
+    )
+    assert manager.ready_marks == 2
+    assert transcriber._model is not None
+    assert transcriber._loaded_key is not None
+    assert transcriber._loaded_key[0] == "funasr"
+
+
+def test_funasr_retries_on_cpu_when_gpu_transcription_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created_devices = []
+
+    class FakeFunASRModel:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = dict(kwargs)
+            created_devices.append(self.kwargs["device"])
+
+        def generate(self, **kwargs):
+            if self.kwargs["device"] == "cuda:0":
+                raise RuntimeError("gpu transcription failed")
+            return [{"text": "cpu funasr"}]
+
+    install_fake_funasr(monkeypatch, FakeFunASRModel)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)),
+    )
+    monkeypatch.setattr(Transcriber, "_looks_like_silence", lambda self, path: False)
+
+    manager = FakeModelManager("sensevoice-small")
+    transcriber = Transcriber(manager)
+
+    text = transcriber.transcribe(
+        "clip.wav",
+        make_settings(
+            tmp_path,
+            device="gpu",
+            use_gpu_if_available=True,
+            fallback_to_cpu=True,
+            selected_model="sensevoice-small",
+        ),
+    )
+
+    assert text == "cpu funasr"
+    assert created_devices == ["cuda:0", "cpu"]
+    assert manager.ready_marks == 1
+    assert transcriber.runtime_message == (
+        "GPU transcription failed, so FunASR continued on CPU."
+    )
+
+
+def test_voz_loads_once_and_silence_does_not_unload_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import core.voz_engine as voz_engine
+
+    created = []
+
+    class FakeVoz:
+        def __init__(self, model_root, cpu_threads=None) -> None:
+            created.append((model_root, cpu_threads))
+
+        def warm_up(self) -> None:
+            pass
+
+        def transcribe(self, samples) -> str:
+            assert samples.dtype == np.float32
+            return "  hello   voz "
+
+    monkeypatch.setattr(voz_engine, "VozModel", FakeVoz)
+    monkeypatch.setattr(voz_engine, "missing_files", lambda root: [])
+    transcriber = Transcriber(FakeModelManager("voz"))
+    settings = make_settings(tmp_path, selected_model="voz")
+    speech = np.full(16000, 0.1, np.float32)
+
+    assert transcriber.transcribe(speech, settings) == "hello voz"
+    assert transcriber.transcribe(np.zeros(16000, np.float32), settings) == ""
+    assert transcriber.transcribe(speech, settings) == "hello voz"
+    assert len(created) == 1
+    assert transcriber.is_loaded()
+
+
+def test_temporary_wav_is_destroyed_after_use(tmp_path, monkeypatch) -> None:
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    with temporary_wav(np.zeros(1600, np.float32)) as path:
+        assert Path(path).stat().st_size > 1600
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_extract_funasr_text_prefers_sentence_info() -> None:
+    transcriber = Transcriber(FakeModelManager("sensevoice-small"))
+
+    text = transcriber._extract_funasr_text(
+        [
+            {
+                "text": "full duplicate text",
+                "sentence_info": [
+                    {"text": "<|en|><|Speech|>first"},
+                    {"text": "second"},
+                ],
+            }
+        ]
+    )
+
+    assert text == "first second"

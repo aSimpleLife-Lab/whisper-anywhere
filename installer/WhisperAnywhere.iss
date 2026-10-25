@@ -1,35 +1,45 @@
-#define MyAppName "Whisper Anywhere"
-#define MyAppVersion "0.1.1-dev"
-#define MyAppPublisher "aSimpleLife Lab"
-#define MyAppExeName "Whisper Anywhere.exe"
+; Inno Setup script: one setup .exe built from the lite build (scripts\build_installer.ps1).
+; Installs per user, so it needs no administrator rights.
+
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 
 [Setup]
 AppId={{1F9D66B4-41F7-4B94-B0EC-4C84B1BCE8A7}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\{#MyAppName}
-DefaultGroupName={#MyAppName}
+AppName=Whisper Anywhere
+AppVersion={#AppVersion}
+AppVerName=Whisper Anywhere {#AppVersion}
+AppPublisher=aSimpleLife Lab
+AppPublisherURL=https://github.com/aSimpleLife-Lab/whisper-anywhere
+AppSupportURL=https://github.com/aSimpleLife-Lab/whisper-anywhere/issues
+DefaultDirName={localappdata}\Programs\Whisper Anywhere
 DisableProgramGroupPage=yes
-OutputDir=..\dist
-OutputBaseFilename=Whisper-Anywhere-Setup
-Compression=lzma
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+OutputDir=..\dist-installer
+OutputBaseFilename=WhisperAnywhere-Setup-{#AppVersion}
+SetupIconFile=..\assets\icon.ico
+UninstallDisplayIcon={app}\Whisper Anywhere.exe
+Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64
-
-[Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+CloseApplications=yes
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
-Source: "..\dist\Whisper Anywhere\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-lite\Whisper Anywhere\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Whisper Anywhere"; Filename: "{app}\Whisper Anywhere.exe"
+Name: "{autodesktop}\Whisper Anywhere"; Filename: "{app}\Whisper Anywhere.exe"; Tasks: desktopicon
+
+[Registry]
+; The app adds this when "Start with Windows" is on; take it away on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Whisper Anywhere"; ValueType: none; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Whisper Anywhere.exe"; Description: "Start Whisper Anywhere"; Flags: nowait postinstall skipifsilent

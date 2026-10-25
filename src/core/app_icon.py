@@ -16,7 +16,9 @@ def resource_path(relative_path: Path) -> Path:
 
 
 def app_icon() -> QIcon:
-    return QIcon(str(resource_path(APP_ICON_PATH)))
+    # The .ico carries hand-made small frames (pixel art at 16 px); the PNG is the fallback.
+    native = resource_path(NATIVE_ICON_PATH)
+    return QIcon(str(native if native.exists() else resource_path(APP_ICON_PATH)))
 
 
 def apply_native_window_icon(hwnd: int) -> None:
