@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -95,6 +96,15 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 def _sanitize_path_text(value: str) -> str:
     return re.sub(r"[A-Za-z]:\\Users\\[^\\\r\n]+", r"%USERPROFILE%", str(value or ""))
+
+
+def _linkify(text: str) -> str:
+    """Rich text with every https link clickable; everything else escaped."""
+    return re.sub(
+        r"https://[^\s<]+[^\s<.,)]",
+        lambda match: f'<a style="color:#55C7D8" href="{match.group(0)}">{match.group(0)}</a>',
+        html.escape(text, quote=False),
+    )
 
 
 def _folder_bytes(folder: Path) -> int:
@@ -580,6 +590,7 @@ class MainWindow(QMainWindow):
         self.model_progress.setVisible(False)
         layout.addWidget(self.model_progress)
         self.model_status = label("", "small", wrap=True)
+        self.model_status.setOpenExternalLinks(True)  # download errors carry a browser link
         layout.addWidget(self.model_status)
         layout.addStretch(1)
         return panel
@@ -1274,7 +1285,7 @@ class MainWindow(QMainWindow):
         self._reset_transcriber()
         self._append_activity_log(f"model prepare failed: {message}")
         self._refresh_model_status()
-        self.model_status.setText(message)
+        self.model_status.setText(_linkify(message))
         self.set_status("Error", message)
 
     def handle_model_prepare_timeout(self, request_id: int) -> None:
@@ -1299,7 +1310,10 @@ class MainWindow(QMainWindow):
             have = min(total, _folder_bytes(self.model_manager.model_storage_path() / "voz"))
             if voz_engine.missing_files(self.model_manager.model_storage_path()):
                 self.model_progress.setValue(int(100 * have / total))
-                detail = f"Downloading {info.label}: {have // 1_000_000} of {total // 1_000_000} MB ({elapsed}s)."
+                if have < 1_000_000:  # nothing much yet: say it is connecting, not "0 MB"
+                    detail = f"Connecting to huggingface.co to download {info.label} ({elapsed}s)."
+                else:
+                    detail = f"Downloading {info.label}: {have // 1_000_000} of {total // 1_000_000} MB ({elapsed}s)."
             else:
                 self.model_progress.setValue(100)
                 detail = f"Optimizing and loading {info.label} for this CPU ({elapsed}s)."
