@@ -7,6 +7,7 @@ from ctypes import c_wchar_p, windll
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from core import app_log
 from core.app_version import APP_VERSION
 from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
@@ -52,6 +53,9 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     settings_manager = SettingsManager()
+    if settings_manager.get("debug_logs", False):
+        app_log.write_to_disk(settings_manager.debug_log_path)
+    app_log.log(f"Whisper Anywhere {APP_VERSION} starting")
     startup_manager = StartupManager()
     startup_sync_error = None
     if settings_manager.get("start_with_windows", False):
@@ -66,6 +70,7 @@ def main() -> int:
     feedback_player = FeedbackPlayer(
         settings_manager.get("start_sound_path", ""),
         settings_manager.get("stop_sound_path", ""),
+        volume=float(settings_manager.get("feedback_volume", 0.5)),
     )
 
     window = MainWindow(
@@ -82,7 +87,6 @@ def main() -> int:
     hotkey = HotkeyListener(
         str(settings_manager.get("shortcut", "Ctrl+Alt+Q")),
         str(settings_manager.get("shortcut_mode", "hold")),
-        log_path=settings_manager.hotkey_log_path,
         start_sound_path=str(settings_manager.get("start_sound_path", "")),
         stop_sound_path=str(settings_manager.get("stop_sound_path", "")),
     )
@@ -94,13 +98,23 @@ def main() -> int:
     hotkey.status.connect(window.set_hotkey_status)
     hotkey.error.connect(window.show_hotkey_error)
     window.shortcut_changed.connect(hotkey.update_shortcut)
+    window.hotkey_enabled_changed.connect(
+        lambda enabled: hotkey.start() if enabled else hotkey.stop()
+    )
+
+    def preview_feedback_volume(volume: float) -> None:
+        feedback_player.set_volume(volume)
+        feedback_player.play(True)
+
+    window.feedback_volume_changed.connect(preview_feedback_volume)
 
     tray.start_requested.connect(window.start_listening)
     tray.stop_requested.connect(window.stop_listening_and_transcribe)
     tray.open_requested.connect(window.open_from_tray)
-    tray.settings_requested.connect(window.open_from_tray)
+    tray.settings_requested.connect(window.open_settings)
     tray.model_selected.connect(window.select_model)
     window.model_changed.connect(tray.set_current_model)
+    window.state_changed.connect(tray.set_state)
 
     def shutdown() -> None:
         hotkey.stop()

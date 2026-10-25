@@ -4,11 +4,12 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from core import voz_engine
 from core.settings_manager import SettingsManager
 
 
 @dataclass(frozen=True)
-class WhisperModelInfo:
+class SpeechModelInfo:
     name: str
     backend_name: str
     approximate_size: str
@@ -16,9 +17,24 @@ class WhisperModelInfo:
     accuracy_estimate: str
     resource_usage_estimate: str
     recommended_use: str
+    engine: str = "whisper"
+    hub: str = ""
+    trust_remote_code: bool = False
+    vad_model: str = ""
+    punc_model: str = ""
+    display_name: str = ""
+    languages: str = "99 languages"
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.name
+
+
+WhisperModelInfo = SpeechModelInfo
 
 
 MODEL_ORDER = [
+    "voz",
     "tiny",
     "base",
     "small",
@@ -27,10 +43,24 @@ MODEL_ORDER = [
     "large-v2",
     "large-v3",
     "turbo",
+    "sensevoice-small",
+    "funasr-nano",
 ]
 
-MODEL_INFO: dict[str, WhisperModelInfo] = {
-    "tiny": WhisperModelInfo(
+MODEL_INFO: dict[str, SpeechModelInfo] = {
+    "voz": SpeechModelInfo(
+        "voz",
+        voz_engine.REPO_ID,
+        f"{voz_engine.DOWNLOAD_MB} MB",
+        "Fastest",
+        "Highest",
+        "~0.7 GB RAM, CPU",
+        "Fast, accurate dictation with punctuation",
+        engine="voz",
+        display_name="Voz",
+        languages="25 European languages",
+    ),
+    "tiny": SpeechModelInfo(
         "tiny",
         "tiny",
         "39 MB",
@@ -38,11 +68,19 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "Lowest",
         "Very low RAM",
         "Quick notes on slower PCs",
+        display_name="Whisper Tiny",
     ),
-    "base": WhisperModelInfo(
-        "base", "base", "74 MB", "Fast", "Basic", "Low RAM", "Default balanced starter"
+    "base": SpeechModelInfo(
+        "base",
+        "base",
+        "74 MB",
+        "Fast",
+        "Basic",
+        "Low RAM",
+        "Default balanced starter",
+        display_name="Whisper Base",
     ),
-    "small": WhisperModelInfo(
+    "small": SpeechModelInfo(
         "small",
         "small",
         "244 MB",
@@ -50,8 +88,9 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "Good",
         "Moderate RAM",
         "General voice typing",
+        display_name="Whisper Small",
     ),
-    "medium": WhisperModelInfo(
+    "medium": SpeechModelInfo(
         "medium",
         "medium",
         "769 MB",
@@ -59,8 +98,9 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "Very good",
         "Higher RAM",
         "Better dictation quality",
+        display_name="Whisper Medium",
     ),
-    "large": WhisperModelInfo(
+    "large": SpeechModelInfo(
         "large",
         "large",
         "1550 MB",
@@ -68,8 +108,9 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "High",
         "High RAM/VRAM",
         "Accuracy over speed",
+        display_name="Whisper Large",
     ),
-    "large-v2": WhisperModelInfo(
+    "large-v2": SpeechModelInfo(
         "large-v2",
         "large-v2",
         "1550 MB",
@@ -77,8 +118,9 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "Higher",
         "High RAM/VRAM",
         "Difficult audio",
+        display_name="Whisper Large v2",
     ),
-    "large-v3": WhisperModelInfo(
+    "large-v3": SpeechModelInfo(
         "large-v3",
         "large-v3",
         "1550 MB",
@@ -86,8 +128,9 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "Highest",
         "High RAM/VRAM",
         "Best local quality",
+        display_name="Whisper Large v3",
     ),
-    "turbo": WhisperModelInfo(
+    "turbo": SpeechModelInfo(
         "turbo",
         "large-v3-turbo",
         "809 MB",
@@ -95,21 +138,59 @@ MODEL_INFO: dict[str, WhisperModelInfo] = {
         "High",
         "Moderate VRAM",
         "Fast high-quality dictation",
+        display_name="Whisper Turbo",
+    ),
+    "sensevoice-small": SpeechModelInfo(
+        "sensevoice-small",
+        "FunAudioLLM/SenseVoiceSmall",
+        "234 MB",
+        "Very fast",
+        "High",
+        "Moderate RAM",
+        "FunASR multilingual dictation",
+        engine="funasr",
+        hub="hf",
+        vad_model="fsmn-vad",
+        display_name="SenseVoice Small",
+        languages="zh, en, yue, ja, ko",
+    ),
+    "funasr-nano": SpeechModelInfo(
+        "funasr-nano",
+        "FunAudioLLM/Fun-ASR-Nano-2512",
+        "800 MB",
+        "Very fast",
+        "High",
+        "Higher RAM/VRAM",
+        "FunASR wide multilingual dictation",
+        engine="funasr",
+        hub="hf",
+        trust_remote_code=True,
+        vad_model="fsmn-vad",
+        display_name="Fun-ASR Nano",
+        languages="31 languages",
     ),
 }
 
 MODEL_ALIASES = {
+    "Voz": "voz",
+    "desert-ant-labs/voz": "voz",
     "large-v3-turbo": "turbo",
+    "SenseVoiceSmall": "sensevoice-small",
+    "iic/SenseVoiceSmall": "sensevoice-small",
+    "fun-asr-nano": "funasr-nano",
+    "Fun-ASR-Nano": "funasr-nano",
+    "Fun-ASR-Nano-2512": "funasr-nano",
+    "FunAudioLLM/Fun-ASR-Nano-2512": "funasr-nano",
 }
 
-LARGE_MODELS = {"large", "large-v2", "large-v3"}
+LARGE_MODELS = {"large", "large-v2", "large-v3", "funasr-nano"}
 
 
 class ModelManager:
     def __init__(self, settings_manager: SettingsManager) -> None:
         self.settings_manager = settings_manager
 
-    def models(self) -> list[WhisperModelInfo]:
+    def models(self) -> list[SpeechModelInfo]:
         return [MODEL_INFO[name] for name in MODEL_ORDER]
 
     def normalize_model_name(self, model_name: str) -> str:
@@ -117,27 +198,31 @@ class ModelManager:
 
     def selected_model(self) -> str:
         selected = self.normalize_model_name(
-            str(self.settings_manager.get("selected_model", "base"))
+            str(self.settings_manager.get("selected_model", "voz"))
         )
         if selected not in MODEL_INFO:
-            selected = "base"
+            selected = "voz"
             self.settings_manager.set("selected_model", selected)
         elif selected != self.settings_manager.get("selected_model"):
             self.settings_manager.set("selected_model", selected)
         return selected
 
-    def selected_info(self) -> WhisperModelInfo:
+    def selected_info(self) -> SpeechModelInfo:
         return MODEL_INFO[self.selected_model()]
 
     def select_model(self, model_name: str) -> None:
         normalized = self.normalize_model_name(model_name)
         if normalized not in MODEL_INFO:
-            raise ValueError(f"Unknown Whisper model: {model_name}")
+            raise ValueError(f"Unknown speech model: {model_name}")
         self.settings_manager.set("selected_model", normalized)
 
     def backend_model_name(self, model_name: str | None = None) -> str:
         selected = self.normalize_model_name(model_name or self.selected_model())
         return MODEL_INFO[selected].backend_name
+
+    def model_engine(self, model_name: str | None = None) -> str:
+        selected = self.normalize_model_name(model_name or self.selected_model())
+        return MODEL_INFO[selected].engine
 
     def is_large_model(self, model_name: str | None = None) -> bool:
         return (
@@ -156,7 +241,12 @@ class ModelManager:
         return self.model_storage_path() / f".{safe_name}.ready.json"
 
     def is_model_ready(self, model_name: str | None = None) -> bool:
-        return self.marker_path(model_name).exists()
+        selected = self.normalize_model_name(model_name or self.selected_model())
+        if MODEL_INFO[selected].engine == "voz":
+            # Voz's files are checked directly, so a bundle copied in by hand
+            # (or onto another drive through a folder link) counts as installed.
+            return not voz_engine.missing_files(self.model_storage_path())
+        return self.marker_path(selected).exists()
 
     def model_status_label(self, model_name: str | None = None) -> str:
         return "Installed" if self.is_model_ready(model_name) else "Download"

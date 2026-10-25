@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+
+from core import app_log
 
 try:
     import win32gui
@@ -15,10 +15,26 @@ except Exception:  # pragma: no cover - Windows-only dependency
 
 try:
     from pynput import keyboard as pynput_keyboard
+    from pynput import mouse as pynput_mouse
 except Exception:  # pragma: no cover - dependency missing at runtime
     pynput_keyboard = None
+    pynput_mouse = None
 
 WATCHDOG_SECONDS = 60.0
+# Low-level mouse hook messages for the bindable buttons: (token, pressed).
+MOUSE_MESSAGES = {
+    0x0201: ("mouse1", True),
+    0x0202: ("mouse1", False),
+    0x0204: ("mouse2", True),
+    0x0205: ("mouse2", False),
+    0x0207: ("mouse3", True),
+    0x0208: ("mouse3", False),
+}
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
+VK_PACKET = 0xE7  # SendInput Unicode characters arrive with this virtual key
+# M1 and M2 are ordinary clicking; bound alone they would block the mouse.
+MOUSE_NEEDS_MODIFIER = {"mouse1", "mouse2"}
 DEFAULT_START_SOUND_PATH = ""
 DEFAULT_STOP_SOUND_PATH = ""
 
@@ -60,6 +76,12 @@ KEY_NAME_TO_VK.update(
         "backslash": 0xDC,
         "rightbracket": 0xDD,
         "quote": 0xDE,
+        # Mouse buttons: M1 left, M2 right, M3 middle, M4/M5 the side buttons.
+        "mouse1": 0x01,
+        "mouse2": 0x02,
+        "mouse3": 0x04,
+        "mouse4": 0x05,
+        "mouse5": 0x06,
     }
 )
 
@@ -89,6 +111,8 @@ DISPLAY_TRIGGER_NAMES = {
 }
 for number in range(1, 13):
     DISPLAY_TRIGGER_NAMES[f"f{number}"] = f"F{number}"
+for number in range(1, 6):
+    DISPLAY_TRIGGER_NAMES[f"mouse{number}"] = f"M{number}"
 DISPLAY_TRIGGER_NAMES.update(
     {
         "semicolon": "Semicolon",
@@ -122,6 +146,7 @@ CHAR_TRIGGER_ALIASES = {
 TRIGGER_TOKEN_ALIASES = {
     "return": "enter",
     "escape": "esc",
+    **{f"m{number}": f"mouse{number}" for number in range(1, 6)},
     **CHAR_TRIGGER_ALIASES,
 }
 
@@ -174,6 +199,11 @@ class ParsedShortcut:
         if self.trigger_name:
             parts.append(self.trigger_name)
         return "+".join(parts)
+
+    @property
+    def mouse_trigger(self) -> str | None:
+        token = self.trigger_token or ""
+        return token if token.startswith("mouse") else None
 
     def involved_vks(self) -> set[int]:
         values: set[int] = set()
@@ -237,6 +267,10 @@ def parse_shortcut(shortcut_text: str) -> ParsedShortcut:
 
     if not modifiers and trigger_vk is None:
         raise ValueError("Shortcut must include Ctrl, Win, Alt, or Shift.")
+    if trigger_token in MOUSE_NEEDS_MODIFIER and not modifiers:
+        raise ValueError(
+            f"{trigger_name} is an ordinary click. Pair it with Ctrl, Alt, Shift or Win, or use M3, M4 or M5."
+        )
 
     return ParsedShortcut(frozenset(modifiers), trigger_vk, trigger_name, trigger_token)
 
@@ -278,6 +312,13 @@ def shortcut_warning(shortcut_text: str) -> str:
     }
     if display in common:
         return common[display]
+    if parsed.mouse_trigger:
+        # The bound button is held back from apps, so say what that costs.
+        if parsed.mouse_trigger in MOUSE_NEEDS_MODIFIER:
+            return f"{parsed.display} no longer reaches apps while it is the dictation shortcut."
+        if parsed.mouse_trigger == "mouse3" and not parsed.modifiers:
+            return "Middle-click no longer reaches apps while M3 is the dictation shortcut."
+        return ""
     if not parsed.modifiers and parsed.trigger_vk is not None:
         return "Single-key shortcuts can trigger while typing. Use a modifier if it gets in the way."
     if parsed.trigger_vk is None:
@@ -302,13 +343,6 @@ def shortcut_warning(shortcut_text: str) -> str:
     return ""
 
 
-def _default_hotkey_log_path() -> Path:
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / "Whisper Anywhere" / "hotkey.log"
-    return Path.home() / "AppData" / "Roaming" / "Whisper Anywhere" / "hotkey.log"
-
-
 class HotkeyListener(QObject):
     pressed = Signal()
     released = Signal(object)
@@ -321,7 +355,6 @@ class HotkeyListener(QObject):
         self,
         shortcut: str = "Ctrl+Alt+Q",
         mode: str = "hold",
-        log_path: str | Path | None = None,
         start_sound_path: str | Path | None = DEFAULT_START_SOUND_PATH,
         stop_sound_path: str | Path | None = DEFAULT_STOP_SOUND_PATH,
         parent: QObject | None = None,
@@ -329,7 +362,6 @@ class HotkeyListener(QObject):
         super().__init__(parent)
         self.shortcut = parse_shortcut(shortcut)
         self.mode = mode if mode in ("hold", "toggle") else "hold"
-        self.log_path = Path(log_path) if log_path else _default_hotkey_log_path()
         self.start_sound_path = Path(start_sound_path) if start_sound_path else None
         self.stop_sound_path = Path(stop_sound_path) if stop_sound_path else None
         self._required_tokens = self._required_tokens_for(self.shortcut)
@@ -338,10 +370,10 @@ class HotkeyListener(QObject):
         self._toggle_listening = False
         self._running = False
         self._listener: object | None = None
+        self._mouse_listener: object | None = None
+        self._mouse_held = False
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
-        self._log_lock = threading.Lock()
-        self._log_failed = False
 
     def start(self) -> None:
         if self._running:
@@ -356,7 +388,7 @@ class HotkeyListener(QObject):
         self._log(
             f"Starting pynput hotkey listener: shortcut={self.shortcut.display}, mode={self.mode}"
         )
-        self.status.emit(f"Starting global shortcut listener. Log: {self.log_path}")
+        self.status.emit("Starting global shortcut listener.")
         self._running = True
         try:
             listener = pynput_keyboard.Listener(
@@ -374,7 +406,60 @@ class HotkeyListener(QObject):
 
         self._listener = listener
         self._log("pynput keyboard listener started")
+        self._sync_mouse_listener()
         self.status.emit(f"Global shortcut ready: {self.shortcut.display}.")
+
+    def _sync_mouse_listener(self) -> None:
+        """Hook the mouse only while a mouse button is the trigger."""
+        wanted = self._running and self.shortcut.mouse_trigger is not None
+        if wanted and self._mouse_listener is None and pynput_mouse is not None:
+            try:
+                listener = pynput_mouse.Listener(win32_event_filter=self._mouse_filter)
+                listener.daemon = True
+                listener.start()
+            except Exception as exc:
+                message = f"Could not watch the mouse for {self.shortcut.display}. {exc}"
+                self._log(message)
+                self.error.emit(message)
+                return
+            self._mouse_listener = listener
+            self._log("pynput mouse listener started")
+        elif not wanted and self._mouse_listener is not None:
+            listener = self._mouse_listener
+            self._mouse_listener = None
+            self._mouse_held = False
+            listener.stop()
+            self._log("pynput mouse listener stopped")
+
+    def _mouse_filter(self, msg: int, data: object) -> bool:
+        """Runs inside the low-level mouse hook, so it only does a dict lookup
+        for ordinary events. The bound button is handled here and withheld
+        from other apps, so M4 starts dictation instead of going Back."""
+        if msg in MOUSE_MESSAGES:
+            token, down = MOUSE_MESSAGES[msg]
+        elif msg in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+            button = (int(getattr(data, "mouseData", 0)) >> 16) & 0xFFFF
+            token, down = ("mouse4" if button == 1 else "mouse5"), msg == WM_XBUTTONDOWN
+        else:
+            return False
+        if token != self.shortcut.mouse_trigger or not self._running:
+            return False
+        if down:
+            with self._state_lock:
+                modifiers_held = self.shortcut.modifiers.issubset(self._pressed_tokens)
+            if not modifiers_held:
+                return False
+            self._mouse_held = True
+            self._press_token(token)
+        elif self._mouse_held:
+            self._mouse_held = False
+            self._release_token(token)
+        else:
+            return False
+        listener = self._mouse_listener
+        if listener is not None:
+            listener.suppress_event()
+        return False
 
     def stop(self) -> None:
         if not self._running and self._listener is None:
@@ -395,6 +480,7 @@ class HotkeyListener(QObject):
             listener.stop()
             if listener.is_alive():
                 listener.join(timeout=2)
+        self._sync_mouse_listener()
 
         self.status.emit("Global shortcut listener stopped.")
 
@@ -408,6 +494,8 @@ class HotkeyListener(QObject):
             self._shortcut_active = False
             self._toggle_listening = False
             self._cancel_watchdog_locked()
+        self._mouse_held = False
+        self._sync_mouse_listener()
         self._log(f"Updated hotkey: shortcut={self.shortcut.display}, mode={self.mode}")
         self.status.emit(f"Shortcut active: {self.shortcut.display} ({self.mode}).")
 
@@ -421,7 +509,9 @@ class HotkeyListener(QObject):
 
         if token == "esc" and self._cancel_active_recording():
             return
+        self._press_token(token)
 
+    def _press_token(self, token: str) -> None:
         emit_pressed = False
         emit_toggle_on = False
         emit_toggle_off = False
@@ -441,20 +531,21 @@ class HotkeyListener(QObject):
                 else:
                     emit_toggle_off = True
 
+        # The cue goes out first so it lands on the key press itself.
         if emit_pressed:
+            self._play_feedback(True)
             self._log("Hold shortcut pressed")
             self.status.emit(f"Shortcut pressed: {self.shortcut.display}.")
-            self._play_feedback(True)
             self.pressed.emit()
         elif emit_toggle_on:
+            self._play_feedback(True)
             self._log("Toggle shortcut started listening")
             self.status.emit(f"Shortcut toggled on: {self.shortcut.display}.")
-            self._play_feedback(True)
             self.pressed.emit()
         elif emit_toggle_off:
+            self._play_feedback(False)
             self._log("Toggle shortcut stopped listening")
             self.status.emit(f"Shortcut toggled off: {self.shortcut.display}.")
-            self._play_feedback(False)
             self.released.emit(None)
 
     def _on_release(self, key: object) -> None:
@@ -464,7 +555,9 @@ class HotkeyListener(QObject):
         token = self._canonical_token(key)
         if token is None:
             return
+        self._release_token(token)
 
+    def _release_token(self, token: str) -> None:
         emit_released = False
         with self._state_lock:
             was_combo_active = self._shortcut_active
@@ -482,10 +575,10 @@ class HotkeyListener(QObject):
                 emit_released = True
 
         if emit_released:
+            self._play_feedback(False)
             hwnd = self._capture_foreground_window()
             self._log(f"Hold shortcut released target={hwnd}")
             self.status.emit(f"Shortcut released: {self.shortcut.display}.")
-            self._play_feedback(False)
             self.released.emit(hwnd)
 
     def _cancel_active_recording(self) -> bool:
@@ -552,10 +645,11 @@ class HotkeyListener(QObject):
         token = PYNPUT_KEY_TOKENS.get(key)
         if token is not None:
             return token
-        char = getattr(key, "char", None)
-        if isinstance(char, str) and char:
-            return CHAR_TRIGGER_ALIASES.get(char, char.lower())
         vk = getattr(key, "vk", None)
+        if vk == VK_PACKET:
+            return None  # characters typed by our own Unicode insertion, not real keys
+        # The virtual-key code comes first: with Ctrl held, pynput reports
+        # control characters ('\x11' for Q) instead of the letter.
         if isinstance(vk, int):
             if 0x70 <= vk <= 0x7B:
                 return f"f{vk - 0x6F}"
@@ -564,20 +658,14 @@ class HotkeyListener(QObject):
             for name, value in KEY_NAME_TO_VK.items():
                 if value == vk:
                     return TRIGGER_TOKEN_ALIASES.get(name, name)
+        char = getattr(key, "char", None)
+        if isinstance(char, str) and char.isprintable():
+            return CHAR_TRIGGER_ALIASES.get(char, char.lower())
         return None
 
     def _play_feedback(self, active: bool) -> None:
-        self._log(f"Feedback requested: {'start' if active else 'stop'}")
         self.feedback.emit(active)
+        self._log(f"Feedback requested: {'start' if active else 'stop'}")
 
     def _log(self, message: str) -> None:
-        try:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            with self._log_lock:
-                with self.log_path.open("a", encoding="utf-8") as file:
-                    file.write(f"{timestamp} {message}\n")
-        except OSError as exc:
-            if not self._log_failed:
-                self._log_failed = True
-                self.status.emit(f"Hotkey logging is unavailable: {exc}")
+        app_log.log(f"hotkey: {message}")

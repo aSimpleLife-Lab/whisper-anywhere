@@ -30,8 +30,9 @@ def default_model_path() -> str:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": 2,
     "first_run_setup_completed": False,
-    "selected_model": "base",
+    "selected_model": "voz",
     "microphone_device": "default",
+    "microphone_name": "",
     "shortcut": "Ctrl+Alt+Q",
     "shortcut_mode": "hold",
     "hotkey_default_version": 3,
@@ -40,6 +41,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "restore_clipboard": True,
     "start_sound_path": "",
     "stop_sound_path": "",
+    "feedback_volume": 0.5,
     "device": "cpu",
     "compute_type": "int8",
     "performance_preset": "balanced",
@@ -50,6 +52,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "low_vram_mode": False,
     "warn_before_large_models": True,
     "cpu_threads": "auto",
+    "keep_model_loaded": True,
     "auto_download_models": True,
     "auto_punctuation": False,
     "auto_capitalization": False,
@@ -83,12 +86,8 @@ class SettingsManager:
         return str(self.settings_path)
 
     @property
-    def hotkey_log_path(self) -> Path:
-        return self.config_dir / "hotkey.log"
-
-    @property
-    def hotkey_log_path_text(self) -> str:
-        return str(self.hotkey_log_path)
+    def debug_log_path(self) -> Path:
+        return self.config_dir / "debug.log"
 
     def ensure_local_folders(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +245,9 @@ class SettingsManager:
     def _normalize(self, values: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(values)
         if normalized.get("selected_model") not in {
+            "voz",
+            "Voz",
+            "desert-ant-labs/voz",
             "tiny",
             "base",
             "small",
@@ -255,8 +257,16 @@ class SettingsManager:
             "large-v3",
             "turbo",
             "large-v3-turbo",
+            "sensevoice-small",
+            "SenseVoiceSmall",
+            "iic/SenseVoiceSmall",
+            "funasr-nano",
+            "fun-asr-nano",
+            "Fun-ASR-Nano",
+            "Fun-ASR-Nano-2512",
+            "FunAudioLLM/Fun-ASR-Nano-2512",
         }:
-            normalized["selected_model"] = "base"
+            normalized["selected_model"] = "voz"
         if normalized.get("device") not in {"auto", "cpu", "gpu"}:
             normalized["device"] = "auto"
         if normalized.get("compute_type") not in {
@@ -283,4 +293,8 @@ class SettingsManager:
                 normalized["cpu_threads"] = max(1, min(64, int(cpu_threads)))
             except (TypeError, ValueError):
                 normalized["cpu_threads"] = "auto"
+        try:
+            normalized["feedback_volume"] = max(0.0, min(1.0, float(normalized.get("feedback_volume", 0.5))))
+        except (TypeError, ValueError):
+            normalized["feedback_volume"] = 0.5
         return normalized

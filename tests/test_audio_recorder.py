@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-import wave
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -71,6 +70,29 @@ def test_list_input_devices_returns_structured_microphone_entries(monkeypatch) -
     ]
 
 
+def test_list_input_devices_shows_each_microphone_once(monkeypatch) -> None:
+    monkeypatch.setattr(audio_module.sd, "default", SimpleNamespace(hostapi=0))
+    monkeypatch.setattr(
+        audio_module.sd,
+        "query_devices",
+        lambda: [
+            {"name": "Microsoft Sound Mapper - Input", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Yeti", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Yeti", "max_input_channels": 2, "hostapi": 1},
+            {"name": "Yeti", "max_input_channels": 2, "hostapi": 2},
+        ],
+    )
+    recorder = audio_module.AudioRecorder()
+
+    assert recorder.list_input_devices() == [
+        audio_module.AudioDevice("default", "Default system microphone"),
+        audio_module.AudioDevice("1", "Yeti"),
+    ]
+    # A device saved from another audio API stays selectable.
+    assert recorder.list_input_devices(keep="3")[-1] == audio_module.AudioDevice("3", "Yeti")
+    assert recorder.input_device_by_id("2") == audio_module.AudioDevice("2", "Yeti")
+
+
 def test_list_input_devices_handles_no_microphone_query_errors(monkeypatch) -> None:
     monkeypatch.setattr(
         audio_module.sd,
@@ -83,43 +105,24 @@ def test_list_input_devices_handles_no_microphone_query_errors(monkeypatch) -> N
     assert devices == [audio_module.AudioDevice("default", "Default system microphone")]
 
 
-def test_stop_writes_wav_with_expected_format(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(audio_module.tempfile, "gettempdir", lambda: str(tmp_path))
-
+def test_stop_returns_float_samples_without_touching_disk(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     recorder = audio_module.AudioRecorder()
     recorder.is_recording = True
     recorder._stream = FakeStream()
     recorder._frames = [
-        np.array([[1000], [-1000]], dtype=np.int16),
-        np.array([[500], [0]], dtype=np.int16),
+        np.array([[16384], [-16384]], dtype=np.int16),
+        np.array([[8192], [0]], dtype=np.int16),
     ]
 
-    output_path = Path(recorder.stop())
+    audio = recorder.stop()
 
-    with wave.open(str(output_path), "rb") as wav_file:
-        assert wav_file.getnchannels() == audio_module.CHANNELS
-        assert wav_file.getsampwidth() == audio_module.SAMPLE_WIDTH_BYTES
-        assert wav_file.getframerate() == audio_module.SAMPLE_RATE
-        assert wav_file.getnframes() == 4
-
+    assert audio.dtype == np.float32
+    assert audio.shape == (4,)
+    assert np.allclose(audio, [0.5, -0.5, 0.25, 0.0])
     assert recorder._frames == []
-    assert output_path.unlink() is None
-
-
-def test_stop_output_file_is_immediately_removable_after_creation(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(audio_module.tempfile, "gettempdir", lambda: str(tmp_path))
-
-    recorder = audio_module.AudioRecorder()
-    recorder.is_recording = True
-    recorder._stream = FakeStream()
-    recorder._frames = [np.array([[250], [-250]], dtype=np.int16)]
-
-    output_path = Path(recorder.stop())
-
-    assert output_path.exists()
-    output_path.unlink()
+    assert recorder.is_recording is False
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_cancel_cleans_up_after_simulated_device_disconnect() -> None:

@@ -60,7 +60,7 @@ def test_settings_manager_falls_back_to_defaults_for_invalid_file_contents(
 
     manager = settings_module.SettingsManager()
 
-    assert manager.get("selected_model") == "base"
+    assert manager.get("selected_model") == "voz"
     assert manager.get("device") == "auto"
     assert manager.get("compute_type") == "auto"
     assert manager.get("insert_method") == "clipboard_paste"
@@ -102,6 +102,18 @@ def test_settings_manager_persists_set_and_update_changes(
     assert saved["selected_model"] == "small"
     assert saved["auto_punctuation"] is True
     assert saved["cpu_threads"] == 8
+
+
+def test_feedback_volume_defaults_to_half_and_stays_in_range(
+    isolated_settings_paths: tuple,
+) -> None:
+    manager = settings_module.SettingsManager()
+    assert manager.get("feedback_volume") == 0.5
+
+    manager.set("feedback_volume", 1.7)
+    assert manager.get("feedback_volume") == 1.0
+    manager.set("feedback_volume", "loud")
+    assert manager.get("feedback_volume") == 0.5
 
 
 def test_settings_manager_rejects_unknown_keys(isolated_settings_paths: tuple) -> None:

@@ -1,0 +1,8 @@
+# Optional local FunASR runtime.
+# Install this after requirements.txt when you want to use the FunASR model cards.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+funasr==1.3.9
+more-itertools>=11.1.0
+truststore>=0.10.4

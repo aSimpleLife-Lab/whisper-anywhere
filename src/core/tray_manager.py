@@ -21,7 +21,9 @@ class TrayManager(QObject):
     ) -> None:
         super().__init__(parent)
         self.model_manager = model_manager
-        self.tray = QSystemTrayIcon(self._make_icon(), self)
+        self._base_icon = self._make_icon()
+        self._state_icons: dict[str, QIcon] = {}
+        self.tray = QSystemTrayIcon(self._base_icon, self)
         self.tray.setToolTip("Whisper Anywhere")
         self.model_actions: dict[str, QAction] = {}
         self._build_menu()
@@ -37,6 +39,29 @@ class TrayManager(QObject):
     def set_current_model(self, model_name: str) -> None:
         for name, action in self.model_actions.items():
             action.setChecked(name == model_name)
+
+    def set_state(self, state: str) -> None:
+        """Badge the tray icon: amber while listening, cyan while working."""
+        colors = {"listening": "#EA8A2B", "busy": "#55C7D8"}
+        tooltips = {
+            "listening": "Whisper Anywhere: listening",
+            "busy": "Whisper Anywhere: working",
+        }
+        if state not in colors:
+            self.tray.setIcon(self._base_icon)
+            self.tray.setToolTip("Whisper Anywhere")
+            return
+        if state not in self._state_icons:
+            pixmap = self._base_icon.pixmap(64, 64)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QColor("#000000"))
+            painter.setBrush(QColor(colors[state]))
+            painter.drawEllipse(34, 34, 28, 28)
+            painter.end()
+            self._state_icons[state] = QIcon(pixmap)
+        self.tray.setIcon(self._state_icons[state])
+        self.tray.setToolTip(tooltips[state])
 
     def show_message(self, title: str, message: str) -> None:
         if self.tray.isVisible():
@@ -60,7 +85,7 @@ class TrayManager(QObject):
         model_menu = menu.addMenu("Current model")
         selected = self.model_manager.selected_model()
         for info in self.model_manager.models():
-            action = QAction(info.name, self)
+            action = QAction(info.label, self)
             action.setCheckable(True)
             action.setChecked(info.name == selected)
             action.triggered.connect(

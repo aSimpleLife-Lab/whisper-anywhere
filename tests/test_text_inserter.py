@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 
 import core.text_inserter as text_module
@@ -16,12 +17,16 @@ class FakeClipboard:
     def CloseClipboard(self) -> None:
         self.events.append("close")
 
+    def EnumClipboardFormats(self, fmt: int) -> int:
+        later = sorted(f for f in self.data if f > fmt)
+        return later[0] if later else 0
+
     def IsClipboardFormatAvailable(self, fmt: int) -> bool:
         return fmt in self.data
 
-    def GetClipboardData(self, fmt: int) -> str:
+    def GetClipboardData(self, fmt: int) -> object:
         self.events.append(("get", fmt))
-        return str(self.data[fmt])
+        return self.data[fmt]
 
     def EmptyClipboard(self) -> None:
         self.events.append("empty")
@@ -51,14 +56,19 @@ class FakeKeyboard:
 
 def test_insert_text_preserves_clipboard_and_pastes_unicode(monkeypatch) -> None:
     fake_clipboard = FakeClipboard("keep me")
+    fake_clipboard.data[8] = b"image bits"  # a copied screenshot (CF_DIB) must survive too
     fake_keyboard = FakeKeyboard()
 
     monkeypatch.setattr(text_module, "win32clipboard", fake_clipboard)
+    monkeypatch.setattr(text_module, "CLIPBOARD_RESTORE_DELAY", 0)
     monkeypatch.setattr(
         text_module, "win32con", type("FakeWin32Con", (), {"CF_UNICODETEXT": 13})()
     )
-    monkeypatch.setattr(text_module, "Key", type("FakeKey", (), {"ctrl": "CTRL"})())
+    monkeypatch.setattr(
+        text_module, "Key", type("FakeKey", (), {"ctrl": "CTRL", "enter": "ENTER"})()
+    )
     monkeypatch.setattr(text_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(text_module, "foreground_is_fullscreen", lambda: False)
 
     inserter = text_module.TextInserter()
     inserter._keyboard = fake_keyboard
@@ -80,19 +90,71 @@ def test_insert_text_preserves_clipboard_and_pastes_unicode(monkeypatch) -> None
         },
     )
 
-    assert restore_calls == [None]
+    # No target window: nothing to restore, so no focus juggling or delay.
+    assert restore_calls == []
+    for thread in threading.enumerate():  # the old clipboard comes back on a timer
+        if isinstance(thread, threading.Timer):
+            thread.join()
     assert fake_clipboard.data[13] == "keep me"
+    assert fake_clipboard.data[8] == b"image bits"
     assert [
         event[2]
         for event in fake_clipboard.events
-        if isinstance(event, tuple) and event[0] == "set"
+        if isinstance(event, tuple) and event[0] == "set" and event[1] == 13
     ] == [
-        "Café 你好. \n",
+        "Café 你好. ",
         "keep me",
     ]
     assert ("hold", "CTRL") in fake_keyboard.events
     assert ("press", "v") in fake_keyboard.events
     assert ("release", "v") in fake_keyboard.events
+    # Enter is a real key press after the paste, not a pasted newline.
+    assert fake_keyboard.events[-2:] == [("press", "ENTER"), ("release", "ENTER")]
+
+
+def test_full_screen_games_get_typed_text_and_keep_the_clipboard(monkeypatch) -> None:
+    fake_clipboard = FakeClipboard("keep me")
+    monkeypatch.setattr(text_module, "win32clipboard", fake_clipboard)
+    monkeypatch.setattr(text_module, "foreground_is_fullscreen", lambda: True)
+    monkeypatch.setattr(text_module.time, "sleep", lambda seconds: None)
+
+    inserter = text_module.TextInserter()
+    typed: list[int] = []
+    monkeypatch.setattr(inserter, "_send_unicode_unit", typed.append)
+    monkeypatch.setattr(inserter, "_wait_for_modifiers_released", lambda: None)
+
+    inserter.insert_text("gg 👍", None, {"typing_delay_ms": 0})
+
+    # The emoji is a surrogate pair: two UTF-16 units, each its own key press.
+    assert typed == [ord("g"), ord("g"), ord(" "), 0xD83D, 0xDC4D]
+    assert fake_clipboard.events == []
+
+
+def test_input_struct_matches_windows_size() -> None:
+    # SendInput rejects every event unless cbSize is the real sizeof(INPUT).
+    import ctypes
+
+    assert ctypes.sizeof(text_module.INPUT) == (40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
+
+
+def test_pasted_text_is_marked_private_for_clipboard_history(monkeypatch) -> None:
+    fake_clipboard = FakeClipboard("")
+    registered: dict[str, int] = {}
+
+    def register(name: str) -> int:
+        return registered.setdefault(name, 49000 + len(registered))
+
+    fake_clipboard.RegisterClipboardFormat = register
+    monkeypatch.setattr(text_module, "win32clipboard", fake_clipboard)
+    monkeypatch.setattr(
+        text_module, "win32con", type("FakeWin32Con", (), {"CF_UNICODETEXT": 13})()
+    )
+
+    text_module.TextInserter()._set_clipboard_text("secret words", private=True)
+
+    assert set(registered) == set(text_module.PRIVATE_CLIPBOARD_FORMATS)
+    assert fake_clipboard.data[registered["CanIncludeInClipboardHistory"]] == b"\0\0\0\0"
+    assert fake_clipboard.data[13] == "secret words"
 
 
 def test_prepare_text_formats_whitespace_and_empty_input() -> None:
