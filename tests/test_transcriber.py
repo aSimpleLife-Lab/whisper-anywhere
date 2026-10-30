@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,7 +12,6 @@ from core.transcriber import (
     RuntimeOptions,
     Transcriber,
     default_cpu_threads,
-    temporary_wav,
 )
 
 
@@ -415,15 +413,52 @@ def test_voz_loads_once_and_silence_does_not_unload_it(
     assert transcriber.is_loaded()
 
 
-def test_temporary_wav_is_destroyed_after_use(tmp_path, monkeypatch) -> None:
+def test_funasr_gets_the_recording_in_memory(tmp_path, monkeypatch) -> None:
+    # It used to get a WAV in %TEMP%, left behind if the app exited mid-way.
     import tempfile
 
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tempfile, "mkstemp", lambda *a, **k: pytest.fail("speech written to disk"))
+    inputs: list[object] = []
 
-    with temporary_wav(np.zeros(1600, np.float32)) as path:
-        assert Path(path).stat().st_size > 1600
+    class FakeFunASRModel:
+        def __init__(self, **kwargs) -> None:
+            pass
 
-    assert list(tmp_path.iterdir()) == []
+        def generate(self, **kwargs):
+            inputs.append(kwargs["input"])
+            return [{"text": "hello"}]
+
+    install_fake_funasr(monkeypatch, FakeFunASRModel)
+    speech = np.full(16000, 0.1, np.float32)
+
+    for model in ("sensevoice-small", "funasr-nano"):
+        transcriber = Transcriber(FakeModelManager(model))
+        assert transcriber.transcribe(speech, make_settings(tmp_path, device="cpu")) == "hello"
+
+    assert inputs[0] is speech and inputs[1][0] is speech  # Nano takes a list
+
+
+def test_a_ready_whisper_model_loads_without_asking_huggingface(tmp_path, monkeypatch) -> None:
+    # Every load asked huggingface.co (no timeout) while the hooks were off.
+    calls: list[bool] = []
+
+    class FakeWhisperModel:
+        def __init__(self, name, **kwargs) -> None:
+            calls.append(kwargs["local_files_only"])
+            if kwargs["local_files_only"] and len(calls) == 3:
+                raise FileNotFoundError("cached copy deleted")  # huggingface_hub's error
+
+    class ReadyManager(FakeModelManager):
+        def is_model_ready(self) -> bool:
+            return True
+
+    runtime = RuntimeOptions(device="cpu", compute_type="int8", cpu_threads=None)
+    Transcriber(FakeModelManager())._create_model(FakeWhisperModel, "base", str(tmp_path), runtime)
+    ready = Transcriber(ReadyManager())
+    ready._create_model(FakeWhisperModel, "base", str(tmp_path), runtime)
+    ready._create_model(FakeWhisperModel, "base", str(tmp_path), runtime)
+
+    assert calls == [False, True, True, False]  # not ready, ready, ready but gone
 
 
 def test_extract_funasr_text_prefers_sentence_info() -> None:

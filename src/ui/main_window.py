@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QMimeData, QPoint, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -48,7 +48,7 @@ from core.hotkey_listener import parse_shortcut, shortcut_warning
 from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager, StartupManagerError
-from core.text_inserter import TextInserter, TextInsertionError, TextTarget
+from core.text_inserter import PRIVATE_CLIPBOARD_FORMATS, TextInserter, TextInsertionError, TextTarget
 from core.transcriber import Transcriber
 from ui.horizon import MicWheel, VoiceHorizon
 from ui.widgets import (
@@ -133,6 +133,17 @@ def _panel() -> QFrame:
     frame = QFrame()
     frame.setObjectName("panel")
     return frame
+
+
+class _PrivateTextEdit(QPlainTextEdit):
+    """Ctrl+C, right-click Copy and drags from here are marked private like a
+    paste: no Win+V history, cloud clipboard or clipboard monitors."""
+
+    def createMimeDataFromSelection(self) -> QMimeData:
+        mime = super().createMimeDataFromSelection()
+        for name, value in PRIVATE_CLIPBOARD_FORMATS.items():
+            mime.setData(f'application/x-qt-windows-mime;value="{name}"', value)
+        return mime
 
 
 class _ModelDelegate(QStyledItemDelegate):
@@ -496,6 +507,7 @@ class MainWindow(QMainWindow):
     shortcut_changed = Signal(str, str)
     hotkey_enabled_changed = Signal(bool)
     feedback_volume_changed = Signal(float)
+    feedback = Signal(bool)  # start or stop cue: the microphone opened or closed
     state_changed = Signal(str)
     level_changed = Signal(float)
     transcription_done = Signal(int, str, float, float)
@@ -785,7 +797,7 @@ class MainWindow(QMainWindow):
         transcript_header.addWidget(label("Kept in memory only", "small"))
         layout.addLayout(transcript_header)
         layout.addSpacing(6)
-        self.last_transcript = QPlainTextEdit()
+        self.last_transcript = _PrivateTextEdit()
         self.last_transcript.setReadOnly(True)
         # Takes whatever height is left; Qt's ~190 px default hint would make short screens scroll.
         self.last_transcript.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
@@ -975,7 +987,7 @@ class MainWindow(QMainWindow):
         self.shortcut_input.capture_cancelled.connect(self.cancel_shortcut_capture)
         self.mode_segmented.changed.connect(lambda value: self.apply_shortcut_settings())
         self.mic_combo.currentIndexChanged.connect(lambda index=0: self.save_microphone_setting())
-        self.refresh_mics_button.clicked.connect(lambda checked=False: self.refresh_microphones())
+        self.refresh_mics_button.clicked.connect(lambda checked=False: self.refresh_microphones(rescan=True))
         for row in (
             self.restore_clipboard_row,
             self.add_space_row,
@@ -1094,7 +1106,9 @@ class MainWindow(QMainWindow):
                 return candidate.id
         return ""
 
-    def refresh_microphones(self) -> None:
+    def refresh_microphones(self, rescan: bool = False) -> None:
+        if rescan:
+            self.audio_recorder.rescan()
         current = self._resolve_saved_microphone() or "missing"
         self.mic_combo.blockSignals(True)
         self.mic_combo.clear()
@@ -1102,11 +1116,12 @@ class MainWindow(QMainWindow):
             self.mic_combo.addItem(device.name, device.id)
         index = self.mic_combo.findData(current)
         if index < 0 and current != "default":
-            self.settings_manager.set("microphone_device", "default")
+            # The saved choice stays, so a headset that connects after logon
+            # is used again once it is back.
             self._append_activity_log("saved microphone missing; using the default")
             self.set_status(
                 "Microphone changed",
-                "The saved microphone was not found, so the default system microphone will be used.",
+                "The saved microphone was not found, so the default system microphone is used until it is back.",
             )
         self.mic_combo.setCurrentIndex(index if index >= 0 else 0)
         self.mic_combo.blockSignals(False)
@@ -1217,7 +1232,9 @@ class MainWindow(QMainWindow):
 
     def _reset_transcriber(self) -> None:
         self._warm_up_generation += 1
+        guard = self.transcriber.load_guard  # model loads unhook the keyboard and mouse
         self.transcriber = Transcriber(self.model_manager)
+        self.transcriber.load_guard = guard
 
     def _schedule_warm_up(self) -> None:
         self._warm_up_timer.start()
@@ -1344,8 +1361,12 @@ class MainWindow(QMainWindow):
                 ("Download", "Not now"),
             ):
                 return
-        if self.model_manager.is_large_model() and bool(
-            self.settings_manager.get("warn_before_large_models", True)
+        # Only a click asks here: select_model already asked when the model was
+        # picked, and a shortcut press must never open a dialog over a game.
+        if (
+            not auto
+            and self.model_manager.is_large_model()
+            and bool(self.settings_manager.get("warn_before_large_models", True))
         ):
             if not self._confirm_model_choice(selected):
                 return
@@ -1452,6 +1473,15 @@ class MainWindow(QMainWindow):
         else:
             self.start_listening()
 
+    def shortcut_pressed(self) -> None:
+        """Hold mode starts here. Toggle mode starts or stops by this window's
+        own state, so a refused start or a stop from the tray leaves nothing
+        out of step."""
+        if self._is_listening and str(self.settings_manager.get("shortcut_mode", "hold")) == "toggle":
+            self.stop_listening_and_transcribe()
+        else:
+            self.start_listening()
+
     def _append_activity_log(self, message: str) -> None:
         app_log.log(message)
 
@@ -1495,12 +1525,18 @@ class MainWindow(QMainWindow):
             self._target_hwnd = None
         try:
             self.audio_recorder.start(str(microphone_id), self.level_changed.emit)
-        except AudioRecorderError as exc:
-            self._append_activity_log("microphone start failed")
-            self.set_status("Error", str(exc))
-            return
+        except AudioRecorderError:
+            # Unplugged since the device list was read? Read it again, once.
+            self.audio_recorder.rescan()
+            try:
+                self.audio_recorder.start(self._resolve_saved_microphone() or "default", self.level_changed.emit)
+            except AudioRecorderError as exc:
+                self._append_activity_log("microphone start failed")
+                self.set_status("Error", str(exc))
+                return
         self._append_activity_log("listening")
         self._is_listening = True
+        self.feedback.emit(True)
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.set_status(
             "Listening",
@@ -1511,10 +1547,12 @@ class MainWindow(QMainWindow):
 
     def _selected_microphone_id(self) -> str:
         microphone_id = self._resolve_saved_microphone()
+        if not microphone_id:  # connected since the device list was read?
+            self.audio_recorder.rescan()
+            microphone_id = self._resolve_saved_microphone()
         if microphone_id:
             return microphone_id
         self._append_activity_log("microphone missing before recording; using default")
-        self.settings_manager.set("microphone_device", "default")
         self.refresh_microphones()
         return "default"
 
@@ -1522,6 +1560,7 @@ class MainWindow(QMainWindow):
         if not self._is_listening:
             return
         self._is_listening = False
+        self.feedback.emit(False)
         try:
             release_window = int(release_window_hwnd) if release_window_hwnd is not None else None
         except (TypeError, ValueError):
@@ -1664,9 +1703,15 @@ class MainWindow(QMainWindow):
 
     def copy_transcript(self) -> None:
         text = self.last_transcript.toPlainText()
-        if text:
-            QApplication.clipboard().setText(text)
-            self.set_status("Ready", "The last transcription was copied to the clipboard.")
+        if not text:
+            return
+        try:
+            # Marked private, like a paste: no Win+V history, cloud clipboard or monitors.
+            self.text_inserter.set_clipboard_text(text, private=True)
+        except TextInsertionError as exc:
+            self.set_status("Error", str(exc))
+            return
+        self.set_status("Ready", "The last transcription was copied to the clipboard.")
 
     # --------------------------------------------------------------- settings
 
@@ -1958,6 +2003,8 @@ class MainWindow(QMainWindow):
             return
         try:
             values = json.loads(Path(path).read_text(encoding="utf-8"))
+            if isinstance(values, dict) and "shortcut" in values:
+                parse_shortcut(str(values["shortcut"]))  # a bad one stopped every later launch
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
             show_message(self, "Settings import failed", f"Could not import settings: {exc}")
@@ -2090,3 +2137,4 @@ class MainWindow(QMainWindow):
         self.settings_window.close()
         self.audio_recorder.close()
         event.accept()
+        QApplication.quit()  # the tray keeps the app alive past its last window

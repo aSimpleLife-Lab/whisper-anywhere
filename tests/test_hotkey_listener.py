@@ -18,6 +18,12 @@ M4 = SimpleNamespace(mouseData=1 << 16)  # XBUTTON1 in the hook's mouseData
 M5 = SimpleNamespace(mouseData=2 << 16)
 
 
+@pytest.fixture(autouse=True)
+def modifiers_really_down(monkeypatch) -> None:
+    # Tests press keys virtually; Windows' own key state would call them up.
+    monkeypatch.setattr(hotkey_module, "_modifier_down", lambda token: True)
+
+
 class FakeMouseListener:
     def __init__(self) -> None:
         self.suppressed = 0
@@ -33,7 +39,7 @@ def listening(shortcut: str) -> tuple[HotkeyListener, list[str], FakeMouseListen
     events: list[str] = []
     listener.pressed.connect(lambda: events.append("pressed"))
     listener.released.connect(lambda hwnd: events.append("released"))
-    listener.feedback.connect(lambda active: events.append("sound-on" if active else "sound-off"))
+    listener.cancelled.connect(lambda: events.append("cancelled"))
     return listener, events, mouse
 
 
@@ -92,7 +98,7 @@ def test_mouse_buttons_parse_as_shortcut_triggers() -> None:
     assert "no longer reaches apps" in shortcut_warning("Ctrl+M2")
 
 
-def test_ctrl_letter_shortcuts_match_and_typed_characters_are_ignored() -> None:
+def test_ctrl_letter_shortcuts_match() -> None:
     listener, events, _mouse = listening("Ctrl+Shift+D")
     ctrl, shift = next(k for k, t in hotkey_module.PYNPUT_KEY_TOKENS.items() if t == "ctrl"), next(
         k for k, t in hotkey_module.PYNPUT_KEY_TOKENS.items() if t == "shift"
@@ -104,9 +110,77 @@ def test_ctrl_letter_shortcuts_match_and_typed_characters_are_ignored() -> None:
     assert events[-1] == "pressed"
     listener._cancel_watchdog_locked()
 
-    single, single_events, _ = listening("Q")
-    single._on_press(KeyCode(vk=hotkey_module.VK_PACKET, char="q"))  # our own Unicode typing
-    assert single_events == []
+
+def test_altgr_and_our_own_typing_are_not_shortcut_keys(monkeypatch) -> None:
+    # Fed through pynput's real hook handling. Windows sends AltGr as a fake
+    # left Ctrl (scan code 0x21D) plus Right Alt, so '@' on a German keyboard
+    # (AltGr+Q) read as Ctrl+Alt+Q; our Unicode typing arrives as VK_PACKET.
+    import ctypes
+
+    from pynput import keyboard
+
+    hooks: list = []
+    monkeypatch.setattr(keyboard.Listener, "start", lambda self: hooks.append(self))
+    listener = HotkeyListener("Ctrl+Alt+Q")
+    events: list[str] = []
+    listener.pressed.connect(lambda: events.append("pressed"))
+    listener.start()
+    hook = hooks[0]
+
+    def send(msg: int, vk: int, scan: int) -> None:
+        data = hook._KBDLLHOOKSTRUCT(vkCode=vk, scanCode=scan)
+        converted = hook._convert(0, msg, ctypes.pointer(data))
+        if converted is not None:
+            hook._process(*converted)
+
+    down, sysdown, up, sysup = 0x0100, 0x0104, 0x0101, 0x0105
+    send(down, 0xA2, 0x21D)  # AltGr: fake left Ctrl...
+    send(sysdown, 0xA5, 0x38)  # ...and Right Alt
+    send(down, 0x51, 0x10)  # Q
+    send(up, 0x51, 0x10)
+    send(sysup, 0xA5, 0x38)
+    send(up, 0xA2, 0x21D)
+    send(down, hotkey_module.VK_PACKET, ord("q"))  # typed by us, not pressed
+    assert events == []
+
+    send(down, 0xA2, 0x1D)  # a real Ctrl+Alt+Q still fires
+    send(sysdown, 0xA4, 0x38)
+    send(sysdown, 0x51, 0x10)
+    assert events == ["pressed"]
+    listener.stop()
+
+
+def test_modifiers_whose_key_up_was_missed_are_forgotten(monkeypatch) -> None:
+    # Ctrl and Alt let go on the secure desktop (Ctrl+Alt+Del) never send a
+    # key-up to our hook; a plain Q must not start dictation afterwards.
+    listener, events, _mouse = listening("Ctrl+Alt+Q")
+    listener._press_token("ctrl")
+    listener._press_token("alt")
+    monkeypatch.setattr(hotkey_module, "_modifier_down", lambda token: False)
+    listener._press_token("q")
+    assert events == []
+
+    clicks, click_events, click_mouse = listening("Ctrl+M4")
+    clicks._press_token("ctrl")
+    clicks._mouse_filter(WM_XBUTTONDOWN, M4)  # Back still works
+    assert click_events == [] and click_mouse.suppressed == 0
+
+
+def test_toggle_presses_leave_start_or_stop_to_the_window() -> None:
+    # The window knows whether it is recording; a refused start used to leave
+    # the listener's own on/off flag inverted.
+    listener, events, _mouse = listening("M4")
+    listener.mode = "toggle"
+    for _ in range(2):
+        listener._mouse_filter(WM_XBUTTONDOWN, M4)
+        listener._mouse_filter(WM_XBUTTONUP, M4)
+    assert events == ["pressed", "pressed"]
+
+
+def test_esc_asks_the_window_to_cancel() -> None:
+    listener, events, _mouse = listening("Ctrl+Alt+Q")
+    listener._on_press(next(k for k, t in hotkey_module.PYNPUT_KEY_TOKENS.items() if t == "esc"))
+    assert events == ["cancelled"]
 
 
 def test_side_button_holds_dictation_and_is_kept_from_other_apps() -> None:
@@ -115,7 +189,7 @@ def test_side_button_holds_dictation_and_is_kept_from_other_apps() -> None:
     listener._mouse_filter(WM_XBUTTONDOWN, M4)
     listener._mouse_filter(WM_XBUTTONUP, M4)
 
-    assert events == ["sound-on", "pressed", "sound-off", "released"]
+    assert events == ["pressed", "released"]
     assert mouse.suppressed == 2  # neither click reaches the browser's Back
     listener._cancel_watchdog_locked()
 
@@ -131,6 +205,6 @@ def test_other_buttons_and_missing_modifiers_pass_through() -> None:
     listener._press_token("ctrl")
     listener._mouse_filter(WM_XBUTTONDOWN, M4)
     listener._mouse_filter(WM_XBUTTONUP, M4)
-    assert events == ["sound-on", "pressed", "sound-off", "released"]
+    assert events == ["pressed", "released"]
     assert mouse.suppressed == 2
     listener._cancel_watchdog_locked()

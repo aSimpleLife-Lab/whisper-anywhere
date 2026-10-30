@@ -24,6 +24,21 @@ class FakeStream:
         self.closed = True
 
 
+def test_rescan_rereads_devices_but_never_under_an_open_stream(monkeypatch) -> None:
+    # PortAudio keeps its startup device list, so a headset connected later
+    # never appeared; re-reading it under a live stream would break the stream.
+    calls: list[str] = []
+    monkeypatch.setattr(audio_module.sd, "_terminate", lambda: calls.append("terminate"))
+    monkeypatch.setattr(audio_module.sd, "_initialize", lambda: calls.append("initialize"))
+    recorder = audio_module.AudioRecorder()
+
+    recorder.rescan()
+    recorder._stream = FakeStream()
+    recorder.rescan()
+
+    assert calls == ["terminate", "initialize"]
+
+
 def test_start_and_audio_callback_manage_buffers_and_levels(monkeypatch) -> None:
     created = {}
 

@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.3.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.3/WhisperAnywhere-Setup-0.2.3.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.4.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.4/WhisperAnywhere-Setup-0.2.4.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -32,7 +32,28 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.3</strong> - no more frozen mouse and keyboard while a model loads</summary>
+<summary><strong>Current build - v0.2.4</strong> - fifteen fixes from a full code review</summary>
+
+- Fixed: after changing a Performance setting, picking a model from the tray, resetting the speech engine, importing settings or running setup again, the v0.2.3 freeze fix stopped applying until the app restarted, so the mouse and keyboard froze again while a model loaded
+- Fixed: on keyboards with AltGr (German, French and others), typing @ or another AltGr character could start dictation, because Windows sends AltGr as Ctrl+Alt
+- Fixed: opening the app from the Start menu while it already ran in the tray started a second copy, and every dictation was pasted twice. The running copy's window now comes forward instead
+- Fixed: if you switched to another window while your speech was transcribed, the text went into that window, and with **Press Enter after text** on it was sent there. It is no longer typed; copy it from **Last transcription**
+- Fixed: after Ctrl+Alt+Del, a UAC prompt or the lock screen, Ctrl or Alt could stay "held", so a plain Q started dictation and a Ctrl+mouse shortcut swallowed ordinary clicks
+- Fixed: a bad shortcut in an imported settings file stopped the app from starting at every sign-in. Imports now refuse it, and a bad saved one falls back to Ctrl+Alt+Q
+- Fixed: the start sound played even when dictation could not start (for example while the last one was still typing), so you spoke into nothing. The sounds now play when the microphone really opens and closes, also for the mic button and the tray. In Press mode a refused start no longer costs an extra press, and Esc cancels any recording
+- Fixed: pressing the shortcut before a large model was downloaded could open a dialog over a full-screen game, one more with each press. Large models are now confirmed once, when you pick them
+- Fixed: **Copy**, Ctrl+C and right-click Copy in **Last transcription** now keep your words out of Windows clipboard history (Win+V) and cloud clipboard sync, as typed text already was
+- Fixed: SenseVoice and Fun-ASR (source builds) wrote each recording to a temporary file; they now get it in memory, like Voz and Whisper
+- Fixed: every Whisper model load contacted huggingface.co, which could hang on a blocked network. Downloaded models now load offline
+- Fixed: a headset that connected after Windows started was never found, and the saved microphone was replaced by the default for good. The saved choice now stays, and the app looks for microphones again when it is missing, when the microphone fails to start, and from the refresh button
+- Fixed: Voz could cut dictations longer than 15 seconds in the middle of a word
+- Fixed: with **Keep running in tray when closed** off, closing the window left the app running in the background
+- Build: a failed build no longer reports success or gets packaged into the installer
+
+</details>
+
+<details>
+<summary><strong>v0.2.3</strong> - no more frozen mouse and keyboard while a model loads</summary>
 
 - Fixed: while a speech model loaded, clicks and key presses stopped working across the whole PC for a few seconds, and longer on a busy PC. This happened at startup, when switching models, and after every dictation with **Low RAM mode** on. Windows waits for the app's shortcut hooks before it delivers any click or key press, and loading a model kept them from answering. The hooks now step aside for the few seconds a model takes to load
 

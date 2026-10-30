@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 
+import pytest
+
 import core.text_inserter as text_module
 
 
@@ -72,16 +74,11 @@ def test_insert_text_preserves_clipboard_and_pastes_unicode(monkeypatch) -> None
 
     inserter = text_module.TextInserter()
     inserter._keyboard = fake_keyboard
-    restore_calls: list[object] = []
-    monkeypatch.setattr(
-        inserter, "_restore_target", lambda target: restore_calls.append(target)
-    )
 
     inserter.insert_text(
         "  café 你好  ",
         None,
         {
-            "typing_delay_ms": 0,
             "restore_clipboard": True,
             "auto_capitalization": True,
             "auto_punctuation": True,
@@ -90,8 +87,6 @@ def test_insert_text_preserves_clipboard_and_pastes_unicode(monkeypatch) -> None
         },
     )
 
-    # No target window: nothing to restore, so no focus juggling or delay.
-    assert restore_calls == []
     for thread in threading.enumerate():  # the old clipboard comes back on a timer
         if isinstance(thread, threading.Timer):
             thread.join()
@@ -123,10 +118,26 @@ def test_full_screen_games_get_typed_text_and_keep_the_clipboard(monkeypatch) ->
     monkeypatch.setattr(inserter, "_send_unicode_unit", typed.append)
     monkeypatch.setattr(inserter, "_wait_for_modifiers_released", lambda: None)
 
-    inserter.insert_text("gg 👍", None, {"typing_delay_ms": 0})
+    inserter.insert_text("gg 👍", None, {})
 
     # The emoji is a surrogate pair: two UTF-16 units, each its own key press.
     assert typed == [ord("g"), ord("g"), ord(" "), 0xD83D, 0xDC4D]
+    assert fake_clipboard.events == []
+
+
+def test_text_is_not_typed_into_a_window_the_user_switched_to(monkeypatch) -> None:
+    # Switching to another chat or a game while the clip is transcribed: the
+    # words went there (and Enter sent them), or the old window covered the game.
+    fake_clipboard = FakeClipboard("keep me")
+    monkeypatch.setattr(text_module, "win32clipboard", fake_clipboard)
+    monkeypatch.setattr(text_module.user32, "GetForegroundWindow", lambda: 222)
+    inserter = text_module.TextInserter()
+    monkeypatch.setattr(inserter, "_send_unicode_unit", lambda unit: pytest.fail("typed"))
+    monkeypatch.setattr(inserter, "_send_ctrl_v", lambda: pytest.fail("pasted"))
+
+    with pytest.raises(text_module.TextInsertionError, match="switched"):
+        inserter.insert_text("secret", text_module.TextTarget(111), {"press_enter_after_text": True})
+
     assert fake_clipboard.events == []
 
 
@@ -150,7 +161,7 @@ def test_pasted_text_is_marked_private_for_clipboard_history(monkeypatch) -> Non
         text_module, "win32con", type("FakeWin32Con", (), {"CF_UNICODETEXT": 13})()
     )
 
-    text_module.TextInserter()._set_clipboard_text("secret words", private=True)
+    text_module.TextInserter().set_clipboard_text("secret words", private=True)
 
     assert set(registered) == set(text_module.PRIVATE_CLIPBOARD_FORMATS)
     assert fake_clipboard.data[registered["CanIncludeInClipboardHistory"]] == b"\0\0\0\0"

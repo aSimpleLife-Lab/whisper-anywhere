@@ -3,7 +3,7 @@ param(
     # Voz and every Whisper model work; SenseVoice and Fun-ASR then say their engine is missing.
     [switch]$Lite
 )
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"  # covers cmdlets only; native exit codes are checked below
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Venv = Join-Path $Root ".venv"
@@ -14,11 +14,14 @@ Set-Location $Root
 if (!(Test-Path $Python)) {
     Write-Host "Creating local build environment..."
     py -3.11 -m venv $Venv
+    if ($LASTEXITCODE -ne 0) { throw "Creating the build environment failed with exit code $LASTEXITCODE" }
 }
 
 Write-Host "Installing build dependencies..."
 & $Python -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Upgrading pip failed with exit code $LASTEXITCODE" }
 & $Python -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "Installing requirements failed with exit code $LASTEXITCODE" }
 
 $OptionalPyInstallerArgs = @()
 $DistPath = "dist"
@@ -30,7 +33,9 @@ if ($Lite) {
         $OptionalPyInstallerArgs += $Package
     }
 } else {
-    & $Python -c "import funasr" *> $null
+    # find_spec prints nothing: under Windows PowerShell 5.1 a failed import's
+    # redirected traceback was a terminating error.
+    & $Python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('funasr') is None)"
 }
 if (!$Lite -and $LASTEXITCODE -eq 0) {
     Write-Host "FunASR detected; adding optional FunASR packaging hooks..."
@@ -75,6 +80,9 @@ Write-Host "Building Whisper Anywhere.exe..."
     --hidden-import pynput.keyboard._win32 `
     --hidden-import pynput.mouse._win32 `
     "src\main.py"
+# Without this a failed build still said complete, and the installer packaged
+# the previous dist-lite under the new version number.
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 Write-Host ""
 Write-Host "Build complete: $DistPath\Whisper Anywhere\Whisper Anywhere.exe"

@@ -60,6 +60,19 @@ def test_long_audio_is_cut_in_the_quiet_gap() -> None:
     assert sum(window.size for window in windows) == audio.size
 
 
+def test_fluent_speech_is_cut_at_its_short_pause_not_the_search_edge() -> None:
+    # Word gaps in fluent speech are far shorter than the smoothing; the
+    # zero-padded edges of the search looked quieter and cut mid-word at 11 s.
+    rng = np.random.default_rng(0)
+    audio = rng.normal(0, 0.3, 20 * ve.SAMPLE_RATE).astype(np.float32)
+    gap = 13 * ve.SAMPLE_RATE
+    audio[gap : gap + 960] = 0.0  # 60 ms
+
+    first = ve.split_windows(audio)[0]
+
+    assert abs(first.size - gap) < 0.15 * ve.SAMPLE_RATE
+
+
 def test_tdt_steps_advance_like_nemo_greedy_decoding() -> None:
     lane = ve._Lane(frames=10)
 
