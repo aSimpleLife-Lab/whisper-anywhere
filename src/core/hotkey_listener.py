@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from PySide6.QtCore import QObject, Signal
 
@@ -374,6 +376,8 @@ class HotkeyListener(QObject):
         self._mouse_held = False
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
+        self._hooks_lock = threading.RLock()  # guards the two pynput listeners
+        self._pauses = 0
 
     def start(self) -> None:
         if self._running:
@@ -390,28 +394,78 @@ class HotkeyListener(QObject):
         )
         self.status.emit("Starting global shortcut listener.")
         self._running = True
-        try:
-            listener = pynput_keyboard.Listener(
-                on_press=self._on_press, on_release=self._on_release
-            )
-            listener.daemon = True
-            listener.start()
-        except Exception as exc:
+        with self._hooks_lock:
+            error = self._start_keyboard_hook()
+            if not error:
+                self._sync_mouse_listener()
+        if error:
             self._running = False
-            message = f"Could not start the global shortcut listener. {exc}"
+            message = f"Could not start the global shortcut listener. {error}"
             self._log(message)
             self.error.emit(message)
             self.status.emit(message)
             return
-
-        self._listener = listener
-        self._log("pynput keyboard listener started")
-        self._sync_mouse_listener()
         self.status.emit(f"Global shortcut ready: {self.shortcut.display}.")
 
+    def _start_keyboard_hook(self) -> str:
+        """Hook the keyboard unless a model load has the hooks paused. Returns
+        an error message, or "" when there is nothing to report."""
+        with self._hooks_lock:
+            if self._pauses or self._listener is not None:
+                return ""
+            try:
+                listener = pynput_keyboard.Listener(
+                    on_press=self._on_press, on_release=self._on_release
+                )
+                listener.daemon = True
+                listener.start()
+            except Exception as exc:
+                return str(exc)
+            self._listener = listener
+        self._log("pynput keyboard listener started")
+        return ""
+
+    @contextmanager
+    def paused(self) -> Iterator[None]:
+        """Unhook the keyboard and mouse while a speech model loads.
+
+        Loading holds Python's GIL for seconds (Voz: about 3 s), and Windows
+        holds back every click and key press on the PC while a low-level hook
+        cannot answer, so the whole PC froze. Unhooked, nothing waits on us."""
+        # ponytail: unhooks around model loads only; move the hooks into their
+        # own process if another long GIL hold turns up.
+        with self._hooks_lock:
+            self._pauses += 1
+            hooks = (self._listener, self._mouse_listener)
+            self._listener = self._mouse_listener = None
+            self._mouse_held = False
+        for hook in hooks:
+            if hook is not None:
+                hook.stop()
+                hook.join(timeout=2)  # gone before the load takes the GIL
+        try:
+            yield
+        finally:
+            error = ""
+            with self._hooks_lock:
+                self._pauses -= 1
+                if not self._pauses and self._running:
+                    error = self._start_keyboard_hook()
+                    self._sync_mouse_listener()
+            if error:
+                self.error.emit(f"Could not restart the global shortcut listener. {error}")
+            # Releases were missed while unhooked: a held shortcut counts as let go.
+            if self.mode == "hold":
+                self._force_release()
+            else:
+                with self._state_lock:
+                    self._pressed_tokens.clear()
+                    self._shortcut_active = False
+
     def _sync_mouse_listener(self) -> None:
-        """Hook the mouse only while a mouse button is the trigger."""
-        wanted = self._running and self.shortcut.mouse_trigger is not None
+        """Hook the mouse only while a mouse button is the trigger. Callers
+        hold _hooks_lock."""
+        wanted = self._running and not self._pauses and self.shortcut.mouse_trigger is not None
         if wanted and self._mouse_listener is None and pynput_mouse is not None:
             try:
                 listener = pynput_mouse.Listener(win32_event_filter=self._mouse_filter)
@@ -474,13 +528,14 @@ class HotkeyListener(QObject):
             self._toggle_listening = False
             self._cancel_watchdog_locked()
 
-        listener = self._listener
-        self._listener = None
-        if listener is not None:
-            listener.stop()
-            if listener.is_alive():
-                listener.join(timeout=2)
-        self._sync_mouse_listener()
+        with self._hooks_lock:
+            listener = self._listener
+            self._listener = None
+            if listener is not None:
+                listener.stop()
+                if listener.is_alive():
+                    listener.join(timeout=2)
+            self._sync_mouse_listener()
 
         self.status.emit("Global shortcut listener stopped.")
 
@@ -495,7 +550,8 @@ class HotkeyListener(QObject):
             self._toggle_listening = False
             self._cancel_watchdog_locked()
         self._mouse_held = False
-        self._sync_mouse_listener()
+        with self._hooks_lock:
+            self._sync_mouse_listener()
         self._log(f"Updated hotkey: shortcut={self.shortcut.display}, mode={self.mode}")
         self.status.emit(f"Shortcut active: {self.shortcut.display} ({self.mode}).")
 

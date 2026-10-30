@@ -37,6 +37,50 @@ def listening(shortcut: str) -> tuple[HotkeyListener, list[str], FakeMouseListen
     return listener, events, mouse
 
 
+def test_model_loads_unhook_the_keyboard_and_mouse(monkeypatch) -> None:
+    # A model load holds Python's GIL for seconds. With our hooks in, Windows
+    # held back every click and key press on the PC until it finished.
+    hooks: list = []
+
+    class FakeHook:
+        def __init__(self, **_callbacks) -> None:
+            self.live = False
+
+        def start(self) -> None:
+            self.live = True
+            hooks.append(self)
+
+        def stop(self) -> None:
+            self.live = False
+
+        def join(self, timeout=None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return self.live
+
+    def live() -> int:
+        return sum(hook.live for hook in hooks)
+
+    monkeypatch.setattr(hotkey_module, "pynput_keyboard", SimpleNamespace(Listener=FakeHook))
+    monkeypatch.setattr(hotkey_module, "pynput_mouse", SimpleNamespace(Listener=FakeHook))
+    listener = HotkeyListener("M3")
+    listener.start()
+    assert live() == 2  # keyboard and mouse
+    with listener.paused():
+        assert live() == 0
+    assert live() == 2
+    released: list[object] = []
+    listener.released.connect(released.append)
+    listener._press_token("mouse3")  # held as a load starts, let go during it
+    with listener.paused():
+        pass
+    assert len(released) == 1  # the recording still stops
+    with listener.paused():
+        listener.stop()  # Dictation switched off during a load stays off
+    assert live() == 0
+
+
 def test_mouse_buttons_parse_as_shortcut_triggers() -> None:
     assert parse_shortcut("M4").mouse_trigger == "mouse4"
     assert parse_shortcut("m5").display == "M5"
