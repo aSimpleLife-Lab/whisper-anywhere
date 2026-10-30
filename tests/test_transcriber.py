@@ -68,6 +68,35 @@ def make_settings(tmp_path, **overrides):
     return settings
 
 
+def test_voz_loads_with_the_input_hooks_paused(monkeypatch, tmp_path) -> None:
+    from contextlib import contextmanager
+
+    from core import voz_engine
+
+    events: list[str] = []
+
+    @contextmanager
+    def paused():
+        events.append("pause")
+        yield
+        events.append("resume")
+
+    class FakeVoz:
+        def __init__(self, *args, **kwargs) -> None:
+            events.append("load")
+
+        def warm_up(self) -> None:
+            events.append("warm-up")
+
+    monkeypatch.setattr(voz_engine, "missing_files", lambda root: [])
+    monkeypatch.setattr(voz_engine, "VozModel", FakeVoz)
+    transcriber = Transcriber(FakeModelManager())
+    transcriber.load_guard = paused
+    transcriber._load_voz_model(make_settings(tmp_path))
+    # Running the model releases the GIL, so the hooks are back for the warm-up.
+    assert events == ["pause", "load", "resume", "warm-up"]
+
+
 def install_fake_whisper(monkeypatch: pytest.MonkeyPatch, whisper_model_class) -> None:
     monkeypatch.setitem(
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=whisper_model_class)

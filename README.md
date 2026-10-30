@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.2.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.2/WhisperAnywhere-Setup-0.2.2.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.3.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.3/WhisperAnywhere-Setup-0.2.3.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -32,7 +32,14 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.2</strong> - a tour of the app</summary>
+<summary><strong>Current build - v0.2.3</strong> - no more frozen mouse and keyboard while a model loads</summary>
+
+- Fixed: while a speech model loaded, clicks and key presses stopped working across the whole PC for a few seconds, and longer on a busy PC. This happened at startup, when switching models, and after every dictation with **Low RAM mode** on. Windows waits for the app's shortcut hooks before it delivers any click or key press, and loading a model kept them from answering. The hooks now step aside for the few seconds a model takes to load
+
+</details>
+
+<details>
+<summary><strong>v0.2.2</strong> - a tour of the app</summary>
 
 - **New tour**: five short steps explain the shortcut, what the window shows while it listens, the speech models, the typing options (including games) and the sounds, privacy and tray. It shows once, after setup or the first time the window opens after updating, never on a hidden start in the tray
 - An orange **!** in the title bar replays the tour (hover it: "Would you like to replay the tutorial?"), and so does **How it works** in Settings

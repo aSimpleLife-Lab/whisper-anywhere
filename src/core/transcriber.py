@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -111,6 +111,9 @@ class Transcriber:
         self.runtime_message = ""
         # A background warm-up and a dictation never load the model twice.
         self._lock = threading.RLock()
+        # main.py points this at the hotkey listener's pause: a model load holds
+        # Python's GIL for seconds, and Windows input must not wait on our hooks.
+        self.load_guard = nullcontext
 
     def is_selected_model_ready(self) -> bool:
         return self.model_manager.is_model_ready()
@@ -229,7 +232,8 @@ class Transcriber:
                 f"in your browser from {voz_engine.HF_FILES_URL} and put them in {voz_engine.bundle_path(model_path)}."
             ) from exc
         try:
-            model = voz_engine.VozModel(model_path, cpu_threads=threads)
+            with self.load_guard():
+                model = voz_engine.VozModel(model_path, cpu_threads=threads)
             model.warm_up()
         except Exception as exc:
             raise TranscriptionError(
@@ -461,7 +465,8 @@ class Transcriber:
         if runtime.device == "cpu":
             # faster-whisper's own default is 4 threads, a fraction of most CPUs.
             kwargs["cpu_threads"] = runtime.cpu_threads or default_cpu_threads()
-        return whisper_model_class(backend_name, **kwargs)
+        with self.load_guard():
+            return whisper_model_class(backend_name, **kwargs)
 
     def _create_funasr_model(
         self,
@@ -487,7 +492,8 @@ class Transcriber:
             kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
         if info.punc_model:
             kwargs["punc_model"] = info.punc_model
-        return automodel_class(**kwargs)
+        with self.load_guard():
+            return automodel_class(**kwargs)
 
     def _should_retry_on_cpu(self, settings: dict[str, Any]) -> bool:
         return (

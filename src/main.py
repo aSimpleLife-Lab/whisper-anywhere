@@ -90,6 +90,7 @@ def main() -> int:
         start_sound_path=str(settings_manager.get("start_sound_path", "")),
         stop_sound_path=str(settings_manager.get("stop_sound_path", "")),
     )
+    transcriber.load_guard = hotkey.paused  # model loads unhook the keyboard and mouse
 
     hotkey.pressed.connect(window.start_listening)
     hotkey.released.connect(window.stop_listening_and_transcribe)
