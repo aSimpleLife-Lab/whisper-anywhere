@@ -10,11 +10,9 @@ from typing import Any
 try:
     import win32clipboard
     import win32con
-    import win32gui
 except Exception:  # pragma: no cover - Windows-only dependency
     win32clipboard = None
     win32con = None
-    win32gui = None
 
 try:
     from pynput.keyboard import Controller, Key
@@ -22,7 +20,6 @@ except Exception:  # pragma: no cover - dependency missing at runtime
     Controller = None
     Key = None
 
-FOCUS_RESTORE_SLEEP = 0.05
 CLIPBOARD_PROPAGATE_SLEEP = 0.05
 CLIPBOARD_RESTORE_DELAY = 0.6
 # GDI handles and owner-drawn formats; Windows rebuilds the bitmap ones from CF_DIB.
@@ -53,47 +50,17 @@ PRIVATE_CLIPBOARD_FORMATS = {
 }
 
 user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
 user32.GetForegroundWindow.argtypes = ()
 user32.GetForegroundWindow.restype = wintypes.HWND
-user32.GetWindowThreadProcessId.argtypes = (
-    wintypes.HWND,
-    ctypes.POINTER(wintypes.DWORD),
-)
-user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.c_void_p)
-user32.GetGUIThreadInfo.restype = wintypes.BOOL
-user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
-user32.SetForegroundWindow.restype = wintypes.BOOL
-user32.SetFocus.argtypes = (wintypes.HWND,)
-user32.SetFocus.restype = wintypes.HWND
 user32.IsWindow.argtypes = (wintypes.HWND,)
 user32.IsWindow.restype = wintypes.BOOL
-user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
-user32.AttachThreadInput.restype = wintypes.BOOL
 user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
 user32.GetAsyncKeyState.restype = ctypes.c_short
-kernel32.GetCurrentThreadId.argtypes = ()
-kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 shell32 = ctypes.windll.shell32
 
 
 class TextInsertionError(RuntimeError):
     pass
-
-
-class GUITHREADINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("hwndActive", wintypes.HWND),
-        ("hwndFocus", wintypes.HWND),
-        ("hwndCapture", wintypes.HWND),
-        ("hwndMenuOwner", wintypes.HWND),
-        ("hwndMoveSize", wintypes.HWND),
-        ("hwndCaret", wintypes.HWND),
-        ("rcCaret", wintypes.RECT),
-    ]
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -141,7 +108,6 @@ def foreground_is_fullscreen() -> bool:
 @dataclass(frozen=True)
 class TextTarget:
     window_hwnd: int
-    focus_hwnd: int | None = None
 
 
 class TextInserter:
@@ -152,16 +118,12 @@ class TextInserter:
         self._saved_clipboard: dict[int, Any] | None = None
 
     def get_foreground_window(self) -> TextTarget | None:
-        window_hwnd = int(user32.GetForegroundWindow())
-        return self.get_window_target(window_hwnd)
+        return self.get_window_target(int(user32.GetForegroundWindow() or 0))
 
     def get_window_target(self, window_hwnd: int | None) -> TextTarget | None:
         if not window_hwnd or not user32.IsWindow(int(window_hwnd)):
             return None
-        focus_hwnd = self._get_focused_control(int(window_hwnd))
-        if focus_hwnd == int(window_hwnd):
-            focus_hwnd = None
-        return TextTarget(window_hwnd=int(window_hwnd), focus_hwnd=focus_hwnd)
+        return TextTarget(window_hwnd=int(window_hwnd))
 
     def insert_text(
         self, text: str, target: TextTarget | None, settings: dict[str, Any]
@@ -170,13 +132,13 @@ class TextInserter:
         if not prepared:
             return
 
-        # Only a target that lost focus needs restoring and time to settle;
-        # usually the user never left it.
+        # The user moved to another window while the clip was transcribed.
+        # Typing there could send the words to the wrong chat (with Enter on,
+        # at once), and pulling the old window back would cover a game.
         if target is not None and int(user32.GetForegroundWindow() or 0) != target.window_hwnd:
-            self._restore_target(target)
-            delay_ms = int(settings.get("typing_delay_ms", 80) or 0)
-            if delay_ms > 0:
-                time.sleep(delay_ms / 1000)
+            raise TextInsertionError(
+                "You switched windows, so the text was not typed. Copy it from Last transcription."
+            )
 
         if foreground_is_fullscreen():
             # Game chat boxes often ignore Ctrl+V or have no paste at all, but
@@ -224,7 +186,7 @@ class TextInserter:
                 self._saved_clipboard = None
             elif self._saved_clipboard is None:
                 self._saved_clipboard = self._snapshot_clipboard()
-        self._set_clipboard_text(text, private=True)
+        self.set_clipboard_text(text, private=True)
         time.sleep(CLIPBOARD_PROPAGATE_SLEEP)
         self._wait_for_modifiers_released()
         self._send_ctrl_v()
@@ -323,7 +285,7 @@ class TextInserter:
                     pass
         return None
 
-    def _set_clipboard_text(self, text: str, private: bool = False) -> None:
+    def set_clipboard_text(self, text: str, private: bool = False) -> None:
         if win32clipboard is None or win32con is None:
             raise TextInsertionError(
                 "Clipboard support is unavailable. Reinstall Whisper Anywhere with pywin32 included."
@@ -417,41 +379,3 @@ class TextInserter:
             raise TextInsertionError(
                 "Windows blocked typing into the focused app. If it runs as administrator, run Whisper Anywhere as administrator too."
             )
-
-    def _get_focused_control(self, window_hwnd: int) -> int | None:
-        thread_id = user32.GetWindowThreadProcessId(window_hwnd, None)
-        if not thread_id:
-            return None
-        info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
-        if not user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)):
-            return None
-        return int(info.hwndFocus) if info.hwndFocus else None
-
-    def _restore_target(self, target: TextTarget | None) -> None:
-        if target is None or not user32.IsWindow(target.window_hwnd):
-            return
-        try:
-            if win32gui is not None:
-                win32gui.BringWindowToTop(target.window_hwnd)
-            user32.SetForegroundWindow(target.window_hwnd)
-            time.sleep(FOCUS_RESTORE_SLEEP)
-        except Exception:
-            pass
-        if target.focus_hwnd and user32.IsWindow(target.focus_hwnd):
-            self._restore_focus(target.focus_hwnd)
-
-    def _restore_focus(self, focus_hwnd: int) -> None:
-        target_thread = user32.GetWindowThreadProcessId(focus_hwnd, None)
-        current_thread = kernel32.GetCurrentThreadId()
-        attached = False
-        try:
-            if target_thread and target_thread != current_thread:
-                attached = bool(
-                    user32.AttachThreadInput(current_thread, target_thread, True)
-                )
-            user32.SetFocus(focus_hwnd)
-        except Exception:
-            pass
-        finally:
-            if attached:
-                user32.AttachThreadInput(current_thread, target_thread, False)

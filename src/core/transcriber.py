@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 import threading
-from typing import Any, Iterator
+from typing import Any
 import wave
 
 import numpy as np
@@ -59,41 +58,6 @@ def read_wav(path: str) -> np.ndarray | None:
         positions = np.arange(0, samples.size, rate / SAMPLE_RATE)
         samples = np.interp(positions, np.arange(samples.size), samples)
     return samples.astype(np.float32)
-
-
-def destroy_file(path: Path) -> None:
-    """Overwrite (10 alternating 0x00/0xFF passes + 1 random), rename, delete."""
-    try:
-        size = path.stat().st_size
-        with path.open("r+b") as file:
-            for fill in [b"\x00", b"\xff"] * 5 + [None]:
-                file.seek(0)
-                file.write(os.urandom(size) if fill is None else fill * size)
-                file.flush()
-                os.fsync(file.fileno())
-        renamed = path.with_name(os.urandom(8).hex())
-        path.replace(renamed)
-        renamed.unlink()
-    except OSError:
-        path.unlink(missing_ok=True)
-
-
-@contextmanager
-def temporary_wav(samples: np.ndarray) -> Iterator[str]:
-    """For engines that only read files: a WAV that is destroyed afterwards."""
-    handle, name = tempfile.mkstemp(suffix=".wav", prefix="wa-")
-    os.close(handle)
-    path = Path(name)
-    try:
-        pcm = np.clip(samples * 32768.0, -32768, 32767).astype(np.int16)
-        with wave.open(name, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(SAMPLE_RATE)
-            wav_file.writeframes(pcm.tobytes())
-        yield name
-    finally:
-        destroy_file(path)
 
 
 @dataclass(frozen=True)
@@ -279,10 +243,6 @@ class Transcriber:
             ) from exc
 
     def _transcribe_with_funasr(self, audio: Audio, settings: dict[str, Any]) -> str:
-        if isinstance(audio, np.ndarray):
-            # FunASR reads files, so it gets a short-lived WAV.
-            with temporary_wav(audio) as path:
-                return self._transcribe_with_funasr(path, settings)
         model = self._load_model(settings)
         kwargs = self._funasr_generate_kwargs(audio, settings)
         if bool(settings.get("translate_to_english", False)):
@@ -460,13 +420,21 @@ class Transcriber:
             "device": runtime.device,
             "compute_type": runtime.compute_type,
             "download_root": model_path,
-            "local_files_only": False,
+            # A model that loaded before is on disk. Asking huggingface.co on
+            # every load sent each dictation off the PC, with no timeout.
+            "local_files_only": self.model_manager.is_model_ready(),
         }
         if runtime.device == "cpu":
             # faster-whisper's own default is 4 threads, a fraction of most CPUs.
             kwargs["cpu_threads"] = runtime.cpu_threads or default_cpu_threads()
         with self.load_guard():
-            return whisper_model_class(backend_name, **kwargs)
+            try:
+                return whisper_model_class(backend_name, **kwargs)
+            except FileNotFoundError:  # huggingface_hub: the cached copy was deleted
+                if not kwargs["local_files_only"]:
+                    raise
+                kwargs["local_files_only"] = False
+                return whisper_model_class(backend_name, **kwargs)
 
     def _create_funasr_model(
         self,
@@ -719,12 +687,11 @@ class Transcriber:
             pass
 
     def _funasr_generate_kwargs(
-        self, audio_path: str, settings: dict[str, Any]
+        self, audio: Audio, settings: dict[str, Any]
     ) -> dict[str, Any]:
+        # Samples stay in memory: FunASR reads arrays as well as files.
         model_name = self.model_manager.selected_model()
-        input_value: str | list[str] = (
-            [audio_path] if model_name == "funasr-nano" else audio_path
-        )
+        input_value: Audio | list[Audio] = [audio] if model_name == "funasr-nano" else audio
         kwargs: dict[str, Any] = {
             "input": input_value,
             "cache": {},

@@ -298,8 +298,11 @@ def split_windows(samples: np.ndarray) -> list[np.ndarray]:
         search_from = start + WINDOW_SAMPLES - CUT_SEARCH_SAMPLES
         region = samples[search_from : start + WINDOW_SAMPLES]
         energy = np.square(region).reshape(-1, CUT_FRAME_SAMPLES).sum(axis=1)
-        smooth = np.convolve(energy, np.ones(CUT_SMOOTH_FRAMES), mode="same")
-        cut = search_from + (int(np.argmin(smooth)) * CUT_FRAME_SAMPLES)
+        # Only full sums: the half-empty ones at the edges looked quiet and cut
+        # fluent speech mid-word. Each sum is centred on its middle frame.
+        smooth = np.convolve(energy, np.ones(CUT_SMOOTH_FRAMES), mode="valid")
+        middle = int(np.argmin(smooth)) + CUT_SMOOTH_FRAMES // 2
+        cut = search_from + middle * CUT_FRAME_SAMPLES
         windows.append(samples[start:cut])
         start = cut
     windows.append(samples[start:])

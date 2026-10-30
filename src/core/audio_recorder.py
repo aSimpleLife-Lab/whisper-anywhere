@@ -55,6 +55,14 @@ class AudioRecorder:
                 devices.append(AudioDevice(device.id, device.name))
         return devices
 
+    def rescan(self) -> None:
+        """Re-read the devices. PortAudio keeps the list from startup, so a
+        headset connected later never showed up; never done under an open
+        stream, which it would break. About 0.1 s."""
+        if self._stream is None:
+            sd._terminate()
+            sd._initialize()
+
     def input_device_by_id(self, device_id: str | None) -> AudioDevice | None:
         wanted = str(device_id or "default")
         if wanted == "default":
