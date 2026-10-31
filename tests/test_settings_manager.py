@@ -124,3 +124,95 @@ def test_settings_manager_rejects_unknown_keys(isolated_settings_paths: tuple) -
 
     with pytest.raises(KeyError, match="Unknown setting: other_fake"):
         manager.update({"other_fake": True})
+
+
+def write_settings_file(appdata_root, content: bytes) -> None:
+    config_dir = appdata_root / settings_module.APP_NAME
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "settings.json").write_bytes(content)
+
+
+def test_a_settings_file_saved_with_a_bom_keeps_every_value(
+    isolated_settings_paths: tuple,
+) -> None:
+    # PowerShell 5.1's Set-Content -Encoding UTF8 writes a BOM, and every
+    # setting quietly went back to its default.
+    appdata_root, _localappdata_root = isolated_settings_paths
+    write_settings_file(
+        appdata_root,
+        json.dumps({"shortcut": "Ctrl+Alt+Space", "low_ram_mode": True}).encode("utf-8-sig"),
+    )
+
+    manager = settings_module.SettingsManager()
+
+    assert manager.get("shortcut") == "Ctrl+Alt+Space"
+    assert manager.get("low_ram_mode") is True
+
+
+def test_an_ansi_settings_file_loads_instead_of_stopping_the_app(
+    isolated_settings_paths: tuple,
+) -> None:
+    # Notepad's "ANSI" save: the é is not UTF-8, and the app died at start.
+    appdata_root, _localappdata_root = isolated_settings_paths
+    write_settings_file(
+        appdata_root,
+        json.dumps(
+            {"shortcut_mode": "toggle", "start_sound_path": "début.wav"}, ensure_ascii=False
+        ).encode("cp1252"),
+    )
+
+    manager = settings_module.SettingsManager()
+
+    assert manager.get("shortcut_mode") == "toggle"
+
+
+def test_import_leaves_start_with_windows_to_this_pc(isolated_settings_paths: tuple) -> None:
+    # Exports always say false, so importing your own file showed the switch
+    # off while the Run key kept starting the app at sign-in.
+    manager = settings_module.SettingsManager()
+    manager.set("start_with_windows", True)
+
+    manager.import_portable({"start_with_windows": False, "shortcut_mode": "toggle"})
+
+    assert manager.get("start_with_windows") is True
+    assert manager.get("shortcut_mode") == "toggle"
+
+
+def test_an_import_without_a_model_folder_keeps_this_pcs_folder(
+    isolated_settings_paths: tuple, tmp_path
+) -> None:
+    # Exports blank a custom model folder; "" then meant the working folder,
+    # where the next shortcut press downloaded Voz.
+    manager = settings_module.SettingsManager()
+    custom = str(tmp_path / "my models")
+    manager.set("model_path", custom)
+
+    ignored = manager.import_portable({"model_path": ""})
+
+    assert manager.get("model_path") == custom
+    assert ignored == []
+
+
+def test_an_empty_model_folder_means_the_default_one(isolated_settings_paths: tuple) -> None:
+    appdata_root, _localappdata_root = isolated_settings_paths
+    write_settings_file(appdata_root, json.dumps({"model_path": ""}).encode())
+
+    manager = settings_module.SettingsManager()
+
+    assert manager.get("model_path") == settings_module.default_model_path()
+
+
+def test_gpu_with_gpu_use_switched_off_is_shown_as_cpu(isolated_settings_paths: tuple) -> None:
+    # v0.1 had both a GPU choice and a "Use GPU" box; with the box off the
+    # engine ran on the CPU while the window showed GPU.
+    appdata_root, _localappdata_root = isolated_settings_paths
+    write_settings_file(
+        appdata_root,
+        json.dumps(
+            {"device": "gpu", "use_gpu_if_available": False, "runtime_default_version": 2}
+        ).encode(),
+    )
+
+    manager = settings_module.SettingsManager()
+
+    assert manager.get("device") == "cpu"

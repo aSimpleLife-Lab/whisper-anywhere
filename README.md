@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.4.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.4/WhisperAnywhere-Setup-0.2.4.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.5.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.5/WhisperAnywhere-Setup-0.2.5.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -32,7 +32,29 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.4</strong> - fifteen fixes from a full code review</summary>
+<summary><strong>Current build - v0.2.5</strong> - the other seventeen fixes from the code review</summary>
+
+- Privacy: v0.1 kept the text of every dictation in `activity.log`, and no later version removed it. It is now overwritten and deleted on the first start, along with any recording a crash left in the temp folder
+- Fixed: an app that was still busy when the dictation was pasted could read your old clipboard instead, restored too early, and with **Press Enter after text** on, send it. The old clipboard now only comes back once the app answers again, and it is no longer lost when a clipboard manager holds the clipboard for a moment or the paste fails
+- Fixed: with a one-key shortcut such as Enter or V, the app's own paste and Enter could start a new recording
+- Fixed: a settings file saved with a BOM (PowerShell 5.1) reset every setting, and one saved as ANSI (Notepad) stopped the app from starting
+- Fixed: importing settings showed **Start with Windows** off while Windows kept starting the app, and left the debug log running against its switch. Start with Windows now stays this PC's own choice
+- Fixed: importing settings exported from a PC with its own model folder made the next shortcut press download Voz into the app's folder
+- Fixed: after importing settings or running setup again, **Dictation** showed on while a paused shortcut stayed off
+- Fixed: **Run setup again** put the old microphone straight back and switched Press mode back to Hold
+- Fixed: settings kept from v0.1 (its presets, its "Use GPU" box, thread counts the menu no longer offers) still changed how speech was recognised while the window showed something else
+- Fixed: when the GPU could not be used (the installer build lacks part of NVIDIA's CUDA libraries), every dictation tried it again before falling back to the CPU. It now stays on the CPU until you change a setting
+- Fixed: a model download slower than about 3.4 Mbit/s was called "took too long" after 15 minutes while it was still arriving. Only a download that stops arriving for 5 minutes fails now, and two downloads never write the same file
+- Fixed: when a finished Voz download could not be moved into place, every later try failed with error 416
+- Fixed: after a tap with no speech, "No speech was detected" stayed the status of every later Voz dictation
+- Fixed: forcing Chinese on SenseVoice (source builds) quietly detected the language instead
+- Fixed: running from source with **Start with Windows** on broke the installed app's autostart
+- Tests: the check that recordings never touch the disk now also watches the temp folder, where v0.1 wrote them
+
+</details>
+
+<details>
+<summary><strong>v0.2.4</strong> - fifteen fixes from a full code review</summary>
 
 - Fixed: after changing a Performance setting, picking a model from the tray, resetting the speech engine, importing settings or running setup again, the v0.2.3 freeze fix stopped applying until the app restarted, so the mouse and keyboard froze again while a model loaded
 - Fixed: on keyboards with AltGr (German, French and others), typing @ or another AltGr character could start dictation, because Windows sends AltGr as Ctrl+Alt

@@ -104,9 +104,12 @@ class SettingsManager:
             return self.all()
 
         try:
-            with self.settings_path.open("r", encoding="utf-8") as file:
-                loaded = json.load(file)
-        except (OSError, json.JSONDecodeError):
+            raw = self.settings_path.read_bytes()
+            try:
+                loaded = json.loads(raw)  # also reads a BOM or UTF-16, as PowerShell 5.1 writes
+            except UnicodeDecodeError:
+                loaded = json.loads(raw.decode("mbcs"))  # a Notepad "ANSI" save
+        except (OSError, ValueError):  # unreadable JSON goes back to the defaults
             loaded = {}
 
         if isinstance(loaded, dict):
@@ -182,6 +185,10 @@ class SettingsManager:
         for key, value in values.items():
             if key not in DEFAULT_SETTINGS:
                 ignored.append(str(key))
+                continue
+            # Exports always say false and blank a custom model folder: both
+            # stay this PC's own (its Run key, its models).
+            if key == "start_with_windows" or (key == "model_path" and not value):
                 continue
             if key in {"model_path", "start_sound_path", "stop_sound_path"}:
                 candidate = str(value or "")
@@ -270,6 +277,10 @@ class SettingsManager:
             normalized["selected_model"] = "voz"
         if normalized.get("device") not in {"auto", "cpu", "gpu"}:
             normalized["device"] = "auto"
+        if normalized["device"] == "gpu" and not normalized.get("use_gpu_if_available"):
+            normalized["device"] = "cpu"  # v0.1's "Use GPU" box was off: it ran on the CPU
+        if not normalized.get("model_path"):
+            normalized["model_path"] = default_model_path()  # "" meant the working folder
         if normalized.get("compute_type") not in {
             "auto",
             "int8",

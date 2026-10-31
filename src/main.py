@@ -89,6 +89,7 @@ def main() -> int:
         return 0
 
     settings_manager = SettingsManager()
+    app_log.destroy_legacy_files(settings_manager.config_dir)  # v0.1 logged what was said
     shortcut = saved_shortcut(settings_manager)
     if settings_manager.get("debug_logs", False):
         app_log.write_to_disk(settings_manager.debug_log_path)
@@ -128,6 +129,7 @@ def main() -> int:
         stop_sound_path=str(settings_manager.get("stop_sound_path", "")),
     )
     transcriber.load_guard = hotkey.paused  # model loads unhook the keyboard and mouse
+    text_inserter.input_guard = hotkey.ignoring_injected  # our own keys are not the shortcut
 
     hotkey.pressed.connect(window.shortcut_pressed)
     hotkey.released.connect(window.stop_listening_and_transcribe)

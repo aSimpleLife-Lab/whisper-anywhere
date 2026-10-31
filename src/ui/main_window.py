@@ -72,7 +72,8 @@ from ui.widgets import (
 )
 
 TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
-MODEL_PREPARE_TIMEOUT_SECONDS = 900.0
+# Nothing new on disk for this long means a model download or load is stuck.
+MODEL_PREPARE_STALL_SECONDS = 300.0
 WARM_UP_DELAY_MS = 1500
 ERROR_STATUSES = {"Error", "Hotkey error", "Startup setting problem", "Update check failed"}
 SPEED_LEVELS = {"Fastest": 5, "Very fast": 5, "Fast": 4, "Balanced": 3, "Moderate": 2, "Slow": 1}
@@ -365,11 +366,10 @@ class FirstRunSetupDialog(ShellDialog):
         parent._select_combo_data(self.model_combo, parent.model_manager.selected_model())
         form.addRow("Speech model", self.model_combo)
         self.mic_combo = SafeComboBox()
-        for device in parent.audio_recorder.list_input_devices():
+        current = parent._resolve_saved_microphone() or "default"
+        for device in parent.audio_recorder.list_input_devices(keep=current):
             self.mic_combo.addItem(device.name, device.id)
-        parent._select_combo_data(
-            self.mic_combo, parent.settings_manager.get("microphone_device", "default")
-        )
+        parent._select_combo_data(self.mic_combo, current)
         form.addRow("Microphone", self.mic_combo)
         self.device_combo = SafeComboBox()
         self.device_combo.addItem("CPU (recommended)", "cpu")
@@ -551,6 +551,7 @@ class MainWindow(QMainWindow):
         self._model_prepare_request_id = 0
         self._active_model_prepare_id = 0
         self._model_prepare_timer: threading.Timer | None = None
+        self._model_prepare_bytes = 0
         self._model_prepare_started_at = 0.0
         self._warm_up_generation = 0
         self._model_progress_timer = QTimer(self)
@@ -1059,6 +1060,7 @@ class MainWindow(QMainWindow):
             self._restore_performance_controls()
         finally:
             self._loading_ui = False
+        self.hotkey_enabled_changed.emit(True)  # the switch says on: so is the shortcut
         self.update_shortcut_warning()
         self.update_bottom_labels()
 
@@ -1072,7 +1074,10 @@ class MainWindow(QMainWindow):
                 device = "cpu"
             self.device_segmented.set_value(device)
             self._select_combo_data(self.compute_combo, get("compute_type", "auto"))
-            self._select_combo_data(self.cpu_threads_combo, get("cpu_threads", "auto"))
+            threads = get("cpu_threads", "auto")
+            if self.cpu_threads_combo.findData(threads) < 0:  # a count v0.1 offered
+                self.cpu_threads_combo.addItem(f"{threads} thread{'' if threads == 1 else 's'}", threads)
+            self._select_combo_data(self.cpu_threads_combo, threads)
             self.fallback_cpu_row.switch.setChecked(bool(get("fallback_to_cpu", True)))
             self.low_vram_row.switch.setChecked(bool(get("low_vram_mode", False)))
             self.keep_model_loaded_row.switch.setChecked(bool(get("keep_model_loaded", True)))
@@ -1223,8 +1228,9 @@ class MainWindow(QMainWindow):
 
     def _start_model_prepare_timer(self, request_id: int) -> None:
         self._cancel_model_prepare_timer()
+        self._model_prepare_bytes = _folder_bytes(self.model_manager.model_storage_path())
         timer = threading.Timer(
-            MODEL_PREPARE_TIMEOUT_SECONDS, lambda: self.model_prepare_timeout.emit(request_id)
+            MODEL_PREPARE_STALL_SECONDS, lambda: self.model_prepare_timeout.emit(request_id)
         )
         timer.daemon = True
         self._model_prepare_timer = timer
@@ -1434,9 +1440,12 @@ class MainWindow(QMainWindow):
     def handle_model_prepare_timeout(self, request_id: int) -> None:
         if request_id != self._active_model_prepare_id or not self._is_preparing_model:
             return
+        if _folder_bytes(self.model_manager.model_storage_path()) != self._model_prepare_bytes:
+            self._start_model_prepare_timer(request_id)  # slow but still arriving
+            return
         self._end_model_prepare()
         self._reset_transcriber()
-        message = "Model preparation took too long and was stopped. Check your connection, or pick a smaller model."
+        message = "Model preparation stalled: nothing new arrived for 5 minutes. Check your connection, or pick a smaller model."
         self._append_activity_log("model prepare timeout")
         self._refresh_model_status()
         self.model_status.setText(message)
@@ -1870,19 +1879,21 @@ class MainWindow(QMainWindow):
             show_message(self, "Shortcut problem", str(exc))
             return
         device = str(dialog.device_combo.currentData() or "cpu")
-        self.settings_manager.update(
-            {
-                "shortcut": shortcut,
-                "shortcut_mode": "hold",
-                "selected_model": str(dialog.model_combo.currentData() or "voz"),
-                "microphone_device": str(dialog.mic_combo.currentData() or "default"),
-                "device": device,
-                "compute_type": "auto",
-                "use_gpu_if_available": device != "cpu",
-                "first_run_setup_completed": True,
-            }
-        )
-        self.shortcut_changed.emit(shortcut, "hold")
+        microphone = str(dialog.mic_combo.currentData() or "default")
+        values = {
+            "shortcut": shortcut,
+            "selected_model": str(dialog.model_combo.currentData() or "voz"),
+            # The name too: the old microphone's saved name took the choice back.
+            "microphone_device": microphone,
+            "microphone_name": "" if microphone == "default" else dialog.mic_combo.currentText(),
+            "device": device,
+            "use_gpu_if_available": device != "cpu",
+            "first_run_setup_completed": True,
+        }
+        if device != self.settings_manager.get("device"):
+            values["compute_type"] = "auto"  # precision follows the new hardware
+        self.settings_manager.update(values)
+        self.shortcut_changed.emit(shortcut, str(self.settings_manager.get("shortcut_mode", "hold")))
         self.model_changed.emit(self.model_manager.selected_model())
         self._reset_transcriber()
         self._load_settings_into_ui()
@@ -2002,7 +2013,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            values = json.loads(Path(path).read_text(encoding="utf-8"))
+            values = json.loads(Path(path).read_bytes())  # bytes: a BOM or UTF-16 is fine too
             if isinstance(values, dict) and "shortcut" in values:
                 parse_shortcut(str(values["shortcut"]))  # a bad one stopped every later launch
             ignored = self.settings_manager.import_portable(values)
@@ -2010,6 +2021,9 @@ class MainWindow(QMainWindow):
             show_message(self, "Settings import failed", f"Could not import settings: {exc}")
             return
         self._load_settings_into_ui()
+        # The switch was set while loading, which skips its handler.
+        debug = bool(self.settings_manager.get("debug_logs", False))
+        app_log.write_to_disk(self.settings_manager.debug_log_path if debug else None)
         self._reset_transcriber()
         self._refresh_model_status()
         self.shortcut_changed.emit(

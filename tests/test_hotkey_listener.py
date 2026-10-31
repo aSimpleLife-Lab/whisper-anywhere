@@ -150,6 +150,38 @@ def test_altgr_and_our_own_typing_are_not_shortcut_keys(monkeypatch) -> None:
     listener.stop()
 
 
+def test_our_own_paste_and_enter_never_fire_the_shortcut(monkeypatch) -> None:
+    # The paste's Ctrl+V and the Enter after it are injected keys too: an
+    # Enter shortcut fired on them and could start a new recording.
+    import ctypes
+
+    from pynput import keyboard
+
+    hooks: list = []
+    monkeypatch.setattr(keyboard.Listener, "start", lambda self: hooks.append(self))
+    monkeypatch.setattr(hotkey_module, "INJECTED_GRACE_SECONDS", 0.0, raising=False)
+    listener = HotkeyListener("Enter")
+    events: list[str] = []
+    listener.pressed.connect(lambda: events.append("pressed"))
+    listener.start()
+    hook = hooks[0]
+
+    def send(msg: int) -> None:
+        data = hook._KBDLLHOOKSTRUCT(vkCode=0x0D, scanCode=0x1C, flags=0x10)  # injected
+        converted = hook._convert(0, msg, ctypes.pointer(data))
+        if converted is not None:
+            hook._process(*converted)
+
+    with listener.ignoring_injected():
+        send(0x0100)
+        send(0x0101)
+    assert events == []
+
+    send(0x0100)  # a tool such as AutoHotkey may still press the shortcut
+    assert events == ["pressed"]
+    listener.stop()
+
+
 def test_modifiers_whose_key_up_was_missed_are_forgotten(monkeypatch) -> None:
     # Ctrl and Alt let go on the secure desktop (Ctrl+Alt+Del) never send a
     # key-up to our hook; a plain Q must not start dictation afterwards.

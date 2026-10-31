@@ -17,10 +17,14 @@ class StartupManager:
         self.app_path = Path(app_path) if app_path else Path(sys.executable)
 
     def startup_command(self) -> str:
-        if getattr(sys, "frozen", False) or self.app_path.suffix.lower() == ".exe":
+        if getattr(sys, "frozen", False):
             return f'"{self.app_path}" --minimized'
+        # From source the interpreter runs the script (python.exe alone exits
+        # at sign-in); pythonw.exe keeps a console window from flashing up.
+        pythonw = self.app_path.with_name("pythonw.exe")
+        interpreter = pythonw if pythonw.exists() else self.app_path
         script_path = Path(sys.argv[0]).resolve()
-        return f'"{self.app_path}" "{script_path}" --minimized'
+        return f'"{interpreter}" "{script_path}" --minimized'
 
     def is_enabled(self) -> bool:
         try:
