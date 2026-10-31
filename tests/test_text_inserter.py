@@ -12,9 +12,17 @@ class FakeClipboard:
     def __init__(self, initial_text: str) -> None:
         self.data = {13: initial_text}
         self.events: list[object] = []
+        self.sequence = 0
+        self.busy = 0  # opens that fail, as while another app holds the clipboard
 
     def OpenClipboard(self) -> None:
+        if self.busy:
+            self.busy -= 1
+            raise OSError("Access is denied.")
         self.events.append("open")
+
+    def GetClipboardSequenceNumber(self) -> int:
+        return self.sequence
 
     def CloseClipboard(self) -> None:
         self.events.append("close")
@@ -33,10 +41,12 @@ class FakeClipboard:
     def EmptyClipboard(self) -> None:
         self.events.append("empty")
         self.data.clear()
+        self.sequence += 1
 
     def SetClipboardData(self, fmt: int, value: str) -> None:
         self.events.append(("set", fmt, value))
         self.data[fmt] = value
+        self.sequence += 1
 
 
 class FakeKeyboard:
@@ -74,6 +84,7 @@ def test_insert_text_preserves_clipboard_and_pastes_unicode(monkeypatch) -> None
 
     inserter = text_module.TextInserter()
     inserter._keyboard = fake_keyboard
+    monkeypatch.setattr(inserter, "_target_is_responsive", lambda: True, raising=False)
 
     inserter.insert_text(
         "  café 你好  ",
@@ -139,6 +150,105 @@ def test_text_is_not_typed_into_a_window_the_user_switched_to(monkeypatch) -> No
         inserter.insert_text("secret", text_module.TextTarget(111), {"press_enter_after_text": True})
 
     assert fake_clipboard.events == []
+
+
+def pasting_inserter(monkeypatch, fake_clipboard: FakeClipboard) -> text_module.TextInserter:
+    monkeypatch.setattr(text_module, "win32clipboard", fake_clipboard)
+    monkeypatch.setattr(
+        text_module, "win32con", type("FakeWin32Con", (), {"CF_UNICODETEXT": 13})()
+    )
+    monkeypatch.setattr(
+        text_module, "Key", type("FakeKey", (), {"ctrl": "CTRL", "enter": "ENTER"})()
+    )
+    monkeypatch.setattr(text_module, "CLIPBOARD_RESTORE_DELAY", 0)
+    monkeypatch.setattr(text_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(text_module, "foreground_is_fullscreen", lambda: False)
+    inserter = text_module.TextInserter()
+    inserter._keyboard = FakeKeyboard()
+    monkeypatch.setattr(inserter, "_target_is_responsive", lambda: True, raising=False)
+    return inserter
+
+
+def wait_for_restore() -> None:
+    for thread in threading.enumerate():  # the old clipboard comes back on a timer
+        if isinstance(thread, threading.Timer):
+            thread.join()
+
+
+def test_the_old_clipboard_comes_back_while_another_app_briefly_holds_it(monkeypatch) -> None:
+    # A clipboard manager or remote desktop holding the clipboard for a moment
+    # at restore time lost the user's own clipboard for good.
+    fake_clipboard = FakeClipboard("keep me")
+    inserter = pasting_inserter(monkeypatch, fake_clipboard)
+    paste = inserter._send_ctrl_v
+
+    def paste_then_busy() -> None:
+        paste()
+        fake_clipboard.busy = 5
+
+    monkeypatch.setattr(inserter, "_send_ctrl_v", paste_then_busy)
+
+    inserter.insert_text("hello", None, {"restore_clipboard": True})
+    wait_for_restore()
+
+    assert fake_clipboard.data[13] == "keep me"
+
+
+def test_an_app_still_busy_with_the_paste_never_gets_the_old_clipboard(monkeypatch) -> None:
+    # An app that reads the paste late read the restored clipboard instead,
+    # and with Enter on, sent it.
+    fake_clipboard = FakeClipboard("old secret")
+    inserter = pasting_inserter(monkeypatch, fake_clipboard)
+    monkeypatch.setattr(inserter, "_target_is_responsive", lambda: False, raising=False)
+
+    inserter.insert_text("hello", None, {"restore_clipboard": True, "press_enter_after_text": True})
+    wait_for_restore()
+
+    assert fake_clipboard.data[13] == "hello"
+
+
+def test_a_failed_paste_puts_the_old_clipboard_straight_back(monkeypatch) -> None:
+    fake_clipboard = FakeClipboard("keep me")
+    inserter = pasting_inserter(monkeypatch, fake_clipboard)
+
+    def blocked() -> None:
+        raise text_module.TextInsertionError("blocked")
+
+    monkeypatch.setattr(inserter, "_send_ctrl_v", blocked)
+
+    with pytest.raises(text_module.TextInsertionError):
+        inserter.insert_text("hello", None, {"restore_clipboard": True})
+    wait_for_restore()
+
+    assert fake_clipboard.data[13] == "keep me"
+
+
+def test_our_own_key_presses_happen_inside_the_input_guard(monkeypatch) -> None:
+    # The paste's Ctrl+V and the Enter after it are injected keys; main.py
+    # points the guard at the shortcut listener, which ignores them meanwhile.
+    inserter = pasting_inserter(monkeypatch, FakeClipboard(""))
+    keys = inserter._keyboard.events
+
+    @contextmanager
+    def guard():
+        keys.append(("guard", "on"))
+        yield
+        keys.append(("guard", "off"))
+
+    inserter.input_guard = guard
+    inserter.insert_text("hello", None, {"restore_clipboard": False, "press_enter_after_text": True})
+
+    assert keys[0] == ("guard", "on")
+    assert keys[-1] == ("guard", "off")
+    assert ("press", "ENTER") in keys
+
+
+def test_no_window_in_front_means_no_target(monkeypatch) -> None:
+    # GetForegroundWindow returns NULL while a window loses activation, and
+    # int(None) stopped the start of a dictation.
+    monkeypatch.setattr(text_module.user32, "GetForegroundWindow", lambda: None)
+
+    assert text_module.TextInserter().get_foreground_window() is None
 
 
 def test_input_struct_matches_windows_size() -> None:

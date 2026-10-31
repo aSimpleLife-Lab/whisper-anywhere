@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from types import SimpleNamespace
 
 import numpy as np
@@ -121,7 +122,9 @@ def test_list_input_devices_handles_no_microphone_query_errors(monkeypatch) -> N
 
 
 def test_stop_returns_float_samples_without_touching_disk(tmp_path, monkeypatch) -> None:
+    # v0.1 wrote recordings to %TEMP%, not the working folder: watch both.
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     recorder = audio_module.AudioRecorder()
     recorder.is_recording = True
     recorder._stream = FakeStream()

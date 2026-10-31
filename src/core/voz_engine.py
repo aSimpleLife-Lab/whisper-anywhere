@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -78,6 +79,9 @@ HF_BASE = "https://huggingface.co"
 HF_FILES_URL = f"{HF_BASE}/{REPO_ID}/tree/{REVISION}/{BUNDLE_DIR}"
 READ_TIMEOUT = 30.0  # seconds without any data before an attempt gives up
 ATTEMPTS = 3
+# A prepare the window gave up on may still be downloading; a second one must
+# not write the same .part files alongside it.
+_download_lock = threading.Lock()
 
 
 def download_bundle(model_root: str | Path) -> Path:
@@ -89,11 +93,11 @@ def download_bundle(model_root: str | Path) -> Path:
     half, and the error says why. urllib uses the Windows proxy settings and
     certificate store, so antivirus HTTPS scanning still works.
     """
-    missing = missing_files(model_root)
-    folder = bundle_path(model_root)
-    folder.mkdir(parents=True, exist_ok=True)
-    for name in missing:
-        _download_file(f"{BUNDLE_DIR}/{name}", folder / name, BUNDLE_FILES[name])
+    with _download_lock:
+        folder = bundle_path(model_root)
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in missing_files(model_root):
+            _download_file(f"{BUNDLE_DIR}/{name}", folder / name, BUNDLE_FILES[name])
     missing = missing_files(model_root)
     if missing:
         raise VozError(f"The Voz download is incomplete: {', '.join(missing)}")
@@ -114,13 +118,14 @@ def _download_file(remote: str, target: Path, size: int) -> None:
         if have:
             headers["Range"] = f"bytes={have}-"  # resume what an earlier try left
         try:
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=READ_TIMEOUT, context=context) as response:
-                if have and response.status != 206:
-                    have = 0  # the server ignored the range: start over
-                with part.open("ab" if have else "wb") as out:
-                    while chunk := response.read(1 << 20):
-                        out.write(chunk)
+            if have < size:  # a complete .part only lacks its rename; more gets HTTP 416
+                request = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(request, timeout=READ_TIMEOUT, context=context) as response:
+                    if have and response.status != 206:
+                        have = 0  # the server ignored the range: start over
+                    with part.open("ab" if have else "wb") as out:
+                        while chunk := response.read(1 << 20):
+                            out.write(chunk)
             if part.stat().st_size == size:
                 os.replace(part, target)
                 return

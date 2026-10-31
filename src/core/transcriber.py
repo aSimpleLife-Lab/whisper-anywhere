@@ -73,6 +73,9 @@ class Transcriber:
         self._model = None
         self._loaded_key: tuple[Any, ...] | None = None
         self.runtime_message = ""
+        # A GPU that failed once (say, no cuBLAS) fails every time: CPU until
+        # the settings change, which builds a new Transcriber.
+        self._gpu_failed = False
         # A background warm-up and a dictation never load the model twice.
         self._lock = threading.RLock()
         # main.py points this at the hotkey listener's pause: a model load holds
@@ -134,11 +137,9 @@ class Transcriber:
             self._loaded_key = None
 
     def _should_keep_model_loaded(self, settings: dict[str, Any]) -> bool:
-        if not bool(settings.get("keep_model_loaded", True)):
-            return False
-        if bool(settings.get("low_ram_mode", False)):
-            return False
-        return str(settings.get("performance_preset", "balanced")) != "low_ram"
+        return bool(settings.get("keep_model_loaded", True)) and not bool(
+            settings.get("low_ram_mode", False)
+        )
 
     def _looks_like_silence(self, audio: Audio) -> bool:
         if isinstance(audio, np.ndarray):
@@ -267,6 +268,7 @@ class Transcriber:
             ) from exc
 
     def _load_model(self, settings: dict[str, Any]):
+        self.runtime_message = ""  # a silent tap's "No speech" is not this dictation's
         model_name = self.model_manager.selected_model()
         engine = self.model_manager.model_engine(model_name)
         if engine == "voz":
@@ -307,6 +309,7 @@ class Transcriber:
             return self._model
         except Exception as exc:
             if runtime.device == "cuda" and bool(settings.get("fallback_to_cpu", True)):
+                self._gpu_failed = True
                 fallback_runtime = RuntimeOptions(
                     device="cpu",
                     compute_type="int8",
@@ -374,6 +377,7 @@ class Transcriber:
             return self._model
         except Exception as exc:
             if runtime.device == "cuda" and bool(settings.get("fallback_to_cpu", True)):
+                self._gpu_failed = True
                 fallback_runtime = RuntimeOptions(
                     device="cpu",
                     compute_type="torch",
@@ -484,6 +488,7 @@ class Transcriber:
     def _load_cpu_fallback_model(self, settings: dict[str, Any]):
         from faster_whisper import WhisperModel
 
+        self._gpu_failed = True
         model_name = self.model_manager.selected_model()
         backend_name = self.model_manager.backend_model_name(model_name)
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
@@ -511,6 +516,7 @@ class Transcriber:
         self._enable_system_certificate_store()
         from funasr import AutoModel
 
+        self._gpu_failed = True
         self._configure_funasr_cache(settings)
         info = self.model_manager.selected_info()
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
@@ -556,10 +562,7 @@ class Transcriber:
     def _resolve_funasr_device(
         self, settings: dict[str, Any], messages: list[str]
     ) -> str:
-        if (
-            bool(settings.get("low_ram_mode", False))
-            or str(settings.get("performance_preset", "balanced")) == "low_ram"
-        ):
+        if self._gpu_failed or bool(settings.get("low_ram_mode", False)):
             return "cpu"
 
         requested = str(settings.get("device", "auto"))
@@ -591,10 +594,8 @@ class Transcriber:
         return "cpu"
 
     def _resolve_device(self, settings: dict[str, Any], messages: list[str]) -> str:
-        if (
-            bool(settings.get("low_ram_mode", False))
-            or str(settings.get("performance_preset", "balanced")) == "low_ram"
-        ):
+        # The v0.1 preset menu is gone, so its saved value no longer counts.
+        if self._gpu_failed or bool(settings.get("low_ram_mode", False)):
             return "cpu"
 
         requested = str(settings.get("device", "auto"))
@@ -627,14 +628,12 @@ class Transcriber:
         self, device: str, settings: dict[str, Any], messages: list[str]
     ) -> str:
         requested = str(settings.get("compute_type", "auto"))
-        preset = str(settings.get("performance_preset", "balanced"))
-        low_vram = bool(settings.get("low_vram_mode", False)) or preset == "low_vram"
         supported = self._supported_compute_types(device)
 
         if requested == "auto":
             if device == "cpu":
                 requested = "int8"
-            elif low_vram or preset == "fast":
+            elif bool(settings.get("low_vram_mode", False)):
                 requested = "int8_float16"
             else:
                 requested = "float16"
@@ -713,11 +712,10 @@ class Transcriber:
         forced_language = str(settings.get("forced_language", "")).strip().lower()
         if language_mode != "force" or not forced_language:
             return "auto"
-        language_aliases = {
-            "zh": "zn",
-            "zh-cn": "zn",
-            "cmn": "zn",
-            "mandarin": "zn",
+        language_aliases = {  # to SenseVoice's codes: it reads any code it lacks as auto
+            "zh-cn": "zh",
+            "cmn": "zh",
+            "mandarin": "zh",
             "jp": "ja",
             "jpn": "ja",
             "kr": "ko",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from ctypes import windll
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ VK_RMENU = 0xA5
 ALTGR_CTRL_SCAN = 0x21D  # the left Ctrl Windows fakes in front of AltGr
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
+LLKHF_INJECTED = 0x10
+# Our last key events reach the hook a moment after SendInput returns.
+INJECTED_GRACE_SECONDS = 0.3
 # Windows' own state of each modifier, which never misses a key-up.
 MODIFIER_VKS = {"ctrl": (0x11,), "shift": (0x10,), "alt": (0x12,), "win": (0x5B, 0x5C)}
 # M1 and M2 are ordinary clicking; bound alone they would block the mouse.
@@ -385,6 +389,7 @@ class HotkeyListener(QObject):
         self._mouse_listener: object | None = None
         self._mouse_held = False
         self._altgr_down = False
+        self._ignore_injected_until = 0.0
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
         self._hooks_lock = threading.RLock()  # guards the two pynput listeners
@@ -475,6 +480,17 @@ class HotkeyListener(QObject):
                     self._pressed_tokens.clear()
                     self._shortcut_active = False
 
+    @contextmanager
+    def ignoring_injected(self) -> Iterator[None]:
+        """Ignore injected keys while we paste or type: the paste's Ctrl+V and
+        the Enter after it fired a V or Enter shortcut. Keys other tools inject,
+        such as AutoHotkey, still count the rest of the time."""
+        self._ignore_injected_until = float("inf")
+        try:
+            yield
+        finally:
+            self._ignore_injected_until = time.monotonic() + INJECTED_GRACE_SECONDS
+
     def _sync_mouse_listener(self) -> None:
         """Hook the mouse only while a mouse button is the trigger. Callers
         hold _hooks_lock."""
@@ -503,6 +519,8 @@ class HotkeyListener(QObject):
         the shortcut (apps still get it). Layouts with AltGr send that key as a
         fake left Ctrl plus Right Alt, so AltGr+Q ('@' on a German keyboard)
         read as Ctrl+Alt+Q. Our own Unicode typing arrives as VK_PACKET."""
+        if data.flags & LLKHF_INJECTED and time.monotonic() < self._ignore_injected_until:
+            return False
         vk = data.vkCode
         if vk == VK_LCONTROL and data.scanCode == ALTGR_CTRL_SCAN:
             self._altgr_down = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)

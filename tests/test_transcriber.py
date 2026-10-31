@@ -380,6 +380,98 @@ def test_funasr_retries_on_cpu_when_gpu_transcription_fails(
     assert transcriber.runtime_message == (
         "GPU transcription failed, so FunASR continued on CPU."
     )
+    transcriber.transcribe(
+        "clip.wav",
+        make_settings(
+            tmp_path,
+            device="gpu",
+            use_gpu_if_available=True,
+            fallback_to_cpu=True,
+            selected_model="sensevoice-small",
+        ),
+    )
+    assert created_devices == ["cuda:0", "cpu"]  # the GPU is not tried again
+
+
+def test_a_failed_gpu_is_not_tried_again_on_every_dictation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A missing cuBLAS (the installer build has none) failed the GPU every
+    # time, so each dictation built a CUDA model and then a CPU one.
+    created = []
+
+    class FakeWhisperModel:
+        def __init__(self, backend_name: str, **kwargs) -> None:
+            created.append(kwargs["device"])
+            if kwargs["device"] == "cuda":
+                raise RuntimeError("cublas64_12.dll is not found")
+
+    install_fake_whisper(monkeypatch, FakeWhisperModel)
+    transcriber = Transcriber(FakeModelManager())
+    monkeypatch.setattr(transcriber, "_cuda_available", lambda: True)
+    settings = make_settings(tmp_path, device="gpu", use_gpu_if_available=True)
+
+    transcriber._load_model(settings)
+    transcriber._load_model(settings)  # kept loaded: the CPU model is reused
+    transcriber.reset()  # Low RAM unloads after each dictation
+    transcriber._load_model(settings)
+
+    assert created == ["cuda", "cpu", "cpu"]
+
+
+def test_a_silent_tap_does_not_stay_the_status_of_later_dictations(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import core.voz_engine as voz_engine
+
+    class FakeVoz:
+        def __init__(self, model_root, cpu_threads=None) -> None:
+            pass
+
+        def warm_up(self) -> None:
+            pass
+
+        def transcribe(self, samples) -> str:
+            return "hello"
+
+    monkeypatch.setattr(voz_engine, "VozModel", FakeVoz)
+    monkeypatch.setattr(voz_engine, "missing_files", lambda root: [])
+    transcriber = Transcriber(FakeModelManager("voz"))
+    settings = make_settings(tmp_path, selected_model="voz")
+    speech = np.full(16000, 0.1, np.float32)
+
+    transcriber.transcribe(speech, settings)
+    transcriber.transcribe(np.zeros(16000, np.float32), settings)
+    assert transcriber.runtime_message.startswith("No speech")
+    assert transcriber.transcribe(speech, settings) == "hello"
+
+    assert transcriber.runtime_message == ""
+
+
+def test_forcing_chinese_on_sensevoice_asks_for_zh() -> None:
+    # SenseVoice only knows "zh"; "zn" quietly fell back to auto-detect.
+    transcriber = Transcriber(FakeModelManager("sensevoice-small"))
+
+    for spoken in ("zh", "zh-cn", "cmn", "mandarin"):
+        settings = {"language_mode": "force", "forced_language": spoken}
+        assert transcriber._funasr_language(settings) == "zh"
+
+
+def test_the_old_preset_menu_no_longer_overrides_the_window(tmp_path) -> None:
+    # v0.2 shows no preset; a saved v0.1 "low_ram" preset still unloaded the
+    # model and forced the CPU while the window said otherwise.
+    transcriber = Transcriber(FakeModelManager())
+    transcriber._cuda_available = lambda: True
+    settings = make_settings(
+        tmp_path,
+        performance_preset="low_ram",
+        low_ram_mode=False,
+        device="gpu",
+        use_gpu_if_available=True,
+    )
+
+    assert transcriber._should_keep_model_loaded(settings) is True
+    assert transcriber._resolve_device(settings, []) == "cuda"
 
 
 def test_voz_loads_once_and_silence_does_not_unload_it(

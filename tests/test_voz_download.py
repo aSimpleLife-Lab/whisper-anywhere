@@ -26,6 +26,9 @@ def serve(files: dict[str, bytes], fail_first: set[str] | None = None):
             start = 0
             if self.headers.get("Range"):
                 start = int(self.headers["Range"].split("=")[1].split("-")[0])
+                if start >= len(data):
+                    self.send_error(416)  # Range Not Satisfiable, as huggingface.co answers
+                    return
             if fail_first and name in fail_first and name not in failed:
                 failed.add(name)  # first try: send half the file, then drop the connection
                 self.send_response(200)
@@ -71,6 +74,54 @@ def test_a_dropped_connection_resumes_where_it_stopped(tmp_path, monkeypatch, sm
     finally:
         server.shutdown()
     assert (ve.bundle_path(tmp_path) / "encoder.onnx.data").read_bytes() == FILES["encoder.onnx.data"]
+
+
+def test_a_part_file_that_is_already_complete_is_moved_into_place(
+    tmp_path, monkeypatch, small_bundle
+) -> None:
+    # The rename failed (antivirus scanning the new file) or the app stopped
+    # just before it: asking for the bytes after the end got HTTP 416 forever.
+    server, url = serve(FILES)
+    monkeypatch.setattr(ve, "HF_BASE", url)
+    monkeypatch.setattr(ve.time, "sleep", lambda seconds: None)
+    folder = ve.bundle_path(tmp_path)
+    folder.mkdir(parents=True)
+    (folder / "encoder.onnx.data.part").write_bytes(FILES["encoder.onnx.data"])
+    try:
+        ve.download_bundle(tmp_path)
+    finally:
+        server.shutdown()
+    assert ve.missing_files(tmp_path) == []
+
+
+def test_two_downloads_never_write_the_same_files_at_once(
+    tmp_path, monkeypatch, small_bundle
+) -> None:
+    # A prepare the window had given up on kept downloading while a new one
+    # wrote the same .part file.
+    active: list[str] = []
+    most: list[int] = []
+
+    def slow_download(remote: str, target, size: int) -> None:
+        active.append(remote)
+        most.append(len(active))
+        time.sleep(0.05)
+        active.remove(remote)
+
+    def prepare() -> None:
+        try:
+            ve.download_bundle(tmp_path)
+        except ve.VozError:
+            pass  # nothing really arrives here
+
+    monkeypatch.setattr(ve, "_download_file", slow_download)
+    threads = [threading.Thread(target=prepare) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max(most) == 1
 
 
 def test_a_silent_network_fails_fast_with_a_plain_reason(tmp_path, monkeypatch, small_bundle) -> None:
