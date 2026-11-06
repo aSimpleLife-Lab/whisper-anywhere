@@ -256,7 +256,7 @@ After the app is built into an EXE, the user should not need to install Python, 
 
 [Voz](https://huggingface.co/desert-ant-labs/voz) by Desert Ant Labs is NVIDIA Parakeet TDT 0.6B v3 converted for on-device use. It writes punctuated, capitalized text in Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, and Ukrainian. For other languages, pick a Whisper model.
 
-Voz's official SDKs run its pipeline in a Swift/WebAssembly core, so Whisper Anywhere reimplements that part in Python (`src/core/voz_engine.py`): the fused mel frontend layout, windows of up to 15 s cut at pauses, and TDT greedy decoding. The first load rewrites the published ONNX graphs once for desktop CPUs (`src/core/voz_graphs.py`):
+Voz's official SDKs run its pipeline in a Swift/WebAssembly core, so Whisper Anywhere reimplements that part in Python (`src/core/voz_engine.py`): the fused mel frontend layout, TDT greedy decoding, and speech longer than 15 s cut into full 15 s windows that overlap by up to 3 s, each starting at the quietest moment, and joined where at least two words agree, as the official pipeline does. The first load rewrites the published ONNX graphs once for desktop CPUs (`src/core/voz_graphs.py`) and checks that copy against the model files on every later load:
 
 - the encoder only processes as much audio as you recorded instead of a fixed 15 s window,
 - the decoder runs one lane per window instead of a fixed 16,
@@ -353,7 +353,7 @@ python .\src\main.py
 pytest
 ```
 
-The `tests\` suite covers `SettingsManager`, mocked `Transcriber` runtime logic, `AudioRecorder`, mocked `TextInserter` clipboard behavior, and the Voz pipeline (input layout, window cutting, TDT decoding) without launching the Qt UI. When the Voz bundle is downloaded, `tests\test_voz_engine.py` also transcribes `tests\data\hello.wav` end to end; set `VOZ_MODEL_ROOT` to point it at a model folder.
+The `tests\` suite covers `SettingsManager`, mocked `Transcriber` runtime logic, `AudioRecorder`, mocked `TextInserter` clipboard behavior, and the Voz pipeline (input layout, window splicing, TDT decoding) without launching the Qt UI. To also run the real-model Voz tests, set `WA_VOZ_TEST_MODELS` to a copy of a model folder (it holds `voz\web`); they rewrite that copy's CPU graphs, so never point it at the folder the app uses.
 
 ### 7. Run lint and formatting checks
 

@@ -62,6 +62,21 @@ def hooks_off(events: list[str]) -> bool:
     return events.count("pause") > events.count("resume")
 
 
+def test_a_new_voz_load_frees_the_old_model_first_inside_the_pause(monkeypatch, tmp_path) -> None:
+    # The old sessions were freed after the new load, outside the pause (an
+    # input stall), and their mapped cache files blocked a cache rebuild.
+    events: list[str] = []
+    install_fake_voz(monkeypatch, events)
+    transcriber = Transcriber(FakeModelManager("voz"))
+    transcriber.load_guard = recording_guard(events)
+    transcriber._load_voz_model(make_settings(tmp_path, cpu_threads=4), warm_up=False)
+    events.clear()
+
+    transcriber._load_voz_model(make_settings(tmp_path, cpu_threads=8), warm_up=False)
+
+    assert events == ["pause", "free", "load", "resume"]
+
+
 @pytest.fixture(autouse=True)
 def no_downloads(monkeypatch):
     """Every engine is a fake here: nothing may reach huggingface.co."""

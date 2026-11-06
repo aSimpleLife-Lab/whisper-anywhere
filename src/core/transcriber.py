@@ -231,6 +231,10 @@ class Transcriber:
             ) from exc
         try:
             with self.load_guard():
+                # The old sessions go first, inside the pause: freeing them holds
+                # the GIL, and their mapped cache files would block a rebuild.
+                self._model = None
+                self._loaded_key = None
                 model = voz_engine.VozModel(model_path, cpu_threads=threads)
             if warm_up:  # a dictation's own clip warms it up
                 model.warm_up()
