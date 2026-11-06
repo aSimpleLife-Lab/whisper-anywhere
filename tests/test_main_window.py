@@ -280,6 +280,15 @@ def test_turning_dictation_off_cancels_a_running_recording() -> None:
     window.cancel_listening.assert_called_once_with()
 
 
+def test_turning_dictation_off_stops_typing_too() -> None:
+    cancel = mw.threading.Event()
+    window = _window(_loading_ui=False, _is_listening=False, _insert_cancel=cancel)
+
+    mw.MainWindow._dictation_toggled(window, False)
+
+    assert cancel.is_set()
+
+
 def test_typing_keeps_the_window_busy_and_arms_a_watchdog(monkeypatch) -> None:
     # The status said "Typing" while the scene showed idle, and nothing timed
     # out an insert that never came back.

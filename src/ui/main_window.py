@@ -1780,6 +1780,8 @@ class MainWindow(QMainWindow):
             return
         if not enabled and self._is_listening:
             self.cancel_listening()  # the shortcut that would end it is about to stop
+        if not enabled and self._insert_cancel is not None:
+            self._insert_cancel.set()  # and nothing more gets typed
         self.hotkey_enabled_changed.emit(enabled)
         self.set_status(
             "Ready" if enabled else "Paused",
