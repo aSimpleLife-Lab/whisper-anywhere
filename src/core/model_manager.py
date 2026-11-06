@@ -39,7 +39,6 @@ MODEL_ORDER = [
     "base",
     "small",
     "medium",
-    "large",
     "large-v2",
     "large-v3",
     "turbo",
@@ -47,6 +46,8 @@ MODEL_ORDER = [
     "funasr-nano",
 ]
 
+# Sizes are what each engine downloads (Hugging Face API, decimal MB), not
+# parameter counts; FunASR's include the 4 MB fsmn-vad model they load with.
 MODEL_INFO: dict[str, SpeechModelInfo] = {
     "voz": SpeechModelInfo(
         "voz",
@@ -63,7 +64,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "tiny": SpeechModelInfo(
         "tiny",
         "tiny",
-        "39 MB",
+        "78 MB",
         "Fastest",
         "Lowest",
         "Very low RAM",
@@ -73,7 +74,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "base": SpeechModelInfo(
         "base",
         "base",
-        "74 MB",
+        "148 MB",
         "Fast",
         "Basic",
         "Low RAM",
@@ -83,7 +84,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "small": SpeechModelInfo(
         "small",
         "small",
-        "244 MB",
+        "486 MB",
         "Balanced",
         "Good",
         "Moderate RAM",
@@ -93,27 +94,17 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "medium": SpeechModelInfo(
         "medium",
         "medium",
-        "769 MB",
+        "1531 MB",
         "Moderate",
         "Very good",
         "Higher RAM",
         "Better dictation quality",
         display_name="Whisper Medium",
     ),
-    "large": SpeechModelInfo(
-        "large",
-        "large",
-        "1550 MB",
-        "Slow",
-        "High",
-        "High RAM/VRAM",
-        "Accuracy over speed",
-        display_name="Whisper Large",
-    ),
     "large-v2": SpeechModelInfo(
         "large-v2",
         "large-v2",
-        "1550 MB",
+        "3090 MB",
         "Slow",
         "Higher",
         "High RAM/VRAM",
@@ -123,7 +114,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "large-v3": SpeechModelInfo(
         "large-v3",
         "large-v3",
-        "1550 MB",
+        "3091 MB",
         "Slow",
         "Highest",
         "High RAM/VRAM",
@@ -133,7 +124,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "turbo": SpeechModelInfo(
         "turbo",
         "large-v3-turbo",
-        "809 MB",
+        "1622 MB",
         "Fast",
         "High",
         "Moderate VRAM",
@@ -143,7 +134,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "sensevoice-small": SpeechModelInfo(
         "sensevoice-small",
         "FunAudioLLM/SenseVoiceSmall",
-        "234 MB",
+        "948 MB",
         "Very fast",
         "High",
         "Moderate RAM",
@@ -157,7 +148,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
     "funasr-nano": SpeechModelInfo(
         "funasr-nano",
         "FunAudioLLM/Fun-ASR-Nano-2512",
-        "800 MB",
+        "1993 MB",
         "Very fast",
         "High",
         "Higher RAM/VRAM",
@@ -174,6 +165,7 @@ MODEL_INFO: dict[str, SpeechModelInfo] = {
 MODEL_ALIASES = {
     "Voz": "voz",
     "desert-ant-labs/voz": "voz",
+    "large": "large-v3",  # faster-whisper fetches the same repo for both
     "large-v3-turbo": "turbo",
     "SenseVoiceSmall": "sensevoice-small",
     "iic/SenseVoiceSmall": "sensevoice-small",
@@ -183,7 +175,7 @@ MODEL_ALIASES = {
     "FunAudioLLM/Fun-ASR-Nano-2512": "funasr-nano",
 }
 
-LARGE_MODELS = {"large", "large-v2", "large-v3", "funasr-nano"}
+LARGE_MODELS = {"large-v2", "large-v3", "funasr-nano"}
 
 
 class ModelManager:
@@ -232,7 +224,10 @@ class ModelManager:
 
     def model_storage_path(self) -> Path:
         path = Path(str(self.settings_manager.get("model_path"))).expanduser()
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:  # its drive is not there right now: models show as not installed
+            pass
         return path
 
     def marker_path(self, model_name: str | None = None) -> Path:
