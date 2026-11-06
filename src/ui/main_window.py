@@ -297,13 +297,19 @@ class _TitleBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
-def _tutorial_pages(shortcut: str) -> list[tuple[str, str]]:
+def _tutorial_pages(shortcut: str, retype: str = "Ctrl+Alt+V") -> list[tuple[str, str]]:
+    again = (
+        f"If a dictation didn't arrive, {retype} types it again."
+        if retype
+        else "If a dictation didn't arrive, copy it from Last transcription."
+    )
     return [
         (
             "Talk, let go, it types",
             f"Click into any text box: a chat, an email, a document or a game's chat. Hold {shortcut} and "
             "speak. When you let go, your words are typed where the cursor is.\n\nRather press once to start "
-            "and again to stop? Pick Toggle next to the shortcut. Esc cancels a recording.",
+            "and again to stop? Pick Toggle next to the shortcut. Esc cancels, even after you let go, until "
+            "the text is typed. A quick tap of a mouse-button shortcut stays a normal click.",
         ),
         (
             "Watch it listen",
@@ -322,14 +328,14 @@ def _tutorial_pages(shortcut: str) -> list[tuple[str, str]]:
         (
             "Typing options and games",
             "The switches on the right decide how the text arrives: keep your clipboard, add a space, press "
-            "Enter to send chat messages, capitalize, end with a full stop.\n\nIn full-screen games the words "
-            "are typed in for you; open the game's chat box before you speak. An app running as administrator "
-            "only accepts typing if Whisper Anywhere runs as administrator too.",
+            "Enter to send chat messages, capitalize, end with a full stop. App profiles in Settings change "
+            "them for one app.\n\nIn full-screen games the words are typed in for you; open the game's chat "
+            f"box before you speak. {again}",
         ),
         (
             "Sounds, privacy and the tray",
-            "Sound effects sets the volume of the start and stop sounds; 0 turns them off. Recordings stay in "
-            "memory and are never saved to disk.\n\nClosing the window keeps Whisper Anywhere in the tray, so "
+            "Sound effects sets the volume of the start, stop, cancel and error sounds; 0 turns them off. "
+            "Recordings stay in memory and are never saved to disk.\n\nClosing the window keeps Whisper Anywhere in the tray, so "
             "the shortcut keeps working. The gear opens Settings: Start with Windows and diagnostics.\n\n"
             "This tour shows once. To see it again, click the orange ! at the top of the window.",
         ),
@@ -342,8 +348,9 @@ class TutorialDialog(ShellDialog):
     def __init__(self, parent: "MainWindow") -> None:
         super().__init__(parent, "How Whisper Anywhere works", "Five quick steps.", width=500)
         shortcut = str(parent.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
+        retype = str(parent.settings_manager.get("retype_shortcut", "") or "")
         self.pages = QStackedWidget()
-        for title, text in _tutorial_pages(shortcut):
+        for title, text in _tutorial_pages(shortcut, retype):
             page = QWidget()
             layout = QVBoxLayout(page)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -954,7 +961,7 @@ class MainWindow(QMainWindow):
         self.feedback_volume_slider.setRange(0, 100)
         self.feedback_volume_slider.setPageStep(10)
         self.feedback_volume_slider.setAccessibleName("Sound effects volume")
-        self.feedback_volume_slider.setToolTip("Volume of the start and stop sounds. 0 turns them off.")
+        self.feedback_volume_slider.setToolTip("Volume of the start, stop, cancel and error sounds. 0 turns them off.")
         volume.addWidget(self.feedback_volume_slider, 1)
         self.feedback_volume_value = label("50%", "muted")
         self.feedback_volume_value.setMinimumWidth(36)
