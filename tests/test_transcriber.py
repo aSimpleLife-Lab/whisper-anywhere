@@ -350,6 +350,25 @@ def test_whisper_downloads_with_the_hooks_on_and_loads_its_folder_inside_the_pau
     assert events == ["pause", f"load {models / 'whisper-small'} offline=True", "resume"]
 
 
+def test_a_first_whisper_download_trusts_the_windows_certificate_store(monkeypatch, tmp_path) -> None:
+    # Voz and FunASR downloads used the Windows store; Whisper's first download
+    # failed where Python's own bundle lacks the PC's root certificate (AU-6).
+    order: list[str] = []
+    install_fake_whisper(monkeypatch, SpeakingWhisper)
+    real_download = sys.modules["faster_whisper.utils"].download_model
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper.utils",
+        SimpleNamespace(download_model=lambda *args, **kwargs: order.append("download") or real_download(*args, **kwargs)),
+    )
+    transcriber = Transcriber(FakeModelManager("small"))
+    monkeypatch.setattr(transcriber, "_enable_system_certificate_store", lambda: order.append("store"))
+
+    transcriber.transcribe(SPEECH, make_settings(tmp_path, device="cpu"))
+
+    assert order == ["store", "download"]
+
+
 def test_a_ready_whisper_model_never_asks_huggingface(monkeypatch, tmp_path) -> None:
     # Every load asked huggingface.co (no timeout) while the hooks were off.
     # A model whose cached copy was deleted downloads again.

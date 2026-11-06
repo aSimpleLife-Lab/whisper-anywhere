@@ -361,10 +361,11 @@ class Transcriber:
         if self._model is not None and self._loaded_key == key:
             return self._model
 
+        ready = self._is_ready(model_name)
+        if not ready:
+            self._enable_system_certificate_store()  # as Voz and FunASR do: filtered networks
         try:
-            model_dir = _local_copy(
-                download_model, backend_name, model_path, self._is_ready(model_name)
-            )
+            model_dir = _local_copy(download_model, backend_name, model_path, ready)
         except Exception as exc:
             raise TranscriptionError(
                 f"The selected Whisper model could not be downloaded. {_failure_reason(exc)}"
