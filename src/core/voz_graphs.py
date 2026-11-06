@@ -22,6 +22,7 @@ Measured on a Ryzen 9 5950X: a 3.3 s clip went from 0.44 s to 0.11 s and an
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -29,47 +30,54 @@ import numpy as np
 ENCODER_CPU = "encoder.cpu.onnx"
 ENCODER_CPU_DATA = "encoder.cpu.data"
 DECODER_CPU = "decoder.cpu.onnx"
+CACHE = (ENCODER_CPU, ENCODER_CPU_DATA, DECODER_CPU)
+CACHE_INFO = "cpu-graphs.json"
+SOURCES = ("encoder.onnx", "encoder.onnx.data", "decoder.onnx")
 GRAPH_VERSION = "2"  # bump when a rewrite changes, so cached graphs rebuild
-_VERSION_KEY = "whisper_anywhere_graph"
 
 
-def ensure_cpu_graphs(folder: Path) -> tuple[Path, Path]:
-    encoder = folder / ENCODER_CPU
-    decoder = folder / DECODER_CPU
-    if not _current(encoder):
-        model = _dynamic_encoder(folder / "encoder.onnx")
-        _to_float32(model, folder, ENCODER_CPU_DATA)
-        _write(encoder, model)
-    if not _current(decoder):
-        import onnx
+def ensure_cpu_graphs(folder: Path, revision: str, rebuild: bool = False) -> tuple[Path, Path]:
+    """The rewritten graphs, built again unless their record still matches.
 
-        model = _dynamic_decoder(onnx.load(str(folder / "decoder.onnx")))
-        _to_float32(model, folder, None)
-        _write(decoder, model)
-    return encoder, decoder
+    The cached encoder reads its 4-bit weights from encoder.onnx.data, so a
+    cache left from other model files loads fine and transcribes nothing, and
+    a cache cut short fails to load every time. A small record of the revision
+    and file sizes it was built from, and the sizes it came out at, catches
+    both without parsing a graph.
+    """
+    record = folder / CACHE_INFO
+    built_from = {"graph": GRAPH_VERSION, "revision": revision, "sources": _sizes(folder, SOURCES)}
+    try:
+        stored = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stored = None
+    if rebuild or stored != {**built_from, "cache": _sizes(folder, CACHE)}:
+        record.unlink(missing_ok=True)  # a build that stops halfway must not be trusted
+        _build(folder)
+        temporary = record.with_name(record.name + ".tmp")
+        temporary.write_text(json.dumps({**built_from, "cache": _sizes(folder, CACHE)}), encoding="utf-8")
+        temporary.replace(record)
+    return folder / ENCODER_CPU, folder / DECODER_CPU
 
 
-def _current(path: Path) -> bool:
-    if not path.is_file():
-        return False
+def _sizes(folder: Path, names: tuple[str, ...]) -> dict[str, int | None]:
+    return {name: (folder / name).stat().st_size if (folder / name).is_file() else None for name in names}
+
+
+def _build(folder: Path) -> None:
     import onnx
 
-    try:
-        model = onnx.load(str(path), load_external_data=False)
-    except Exception:
-        return False
-    return any(
-        prop.key == _VERSION_KEY and prop.value == GRAPH_VERSION
-        for prop in model.metadata_props
-    )
+    model = _dynamic_encoder(folder / "encoder.onnx")
+    _to_float32(model, folder, ENCODER_CPU_DATA)
+    _write(folder / ENCODER_CPU, model)
+    model = _dynamic_decoder(onnx.load(str(folder / "decoder.onnx")))
+    _to_float32(model, folder, None)
+    _write(folder / DECODER_CPU, model)
 
 
 def _write(path: Path, model) -> None:
     import onnx
 
-    entry = model.metadata_props.add()
-    entry.key = _VERSION_KEY
-    entry.value = GRAPH_VERSION
     temporary = path.with_name(path.name + ".tmp")
     onnx.save(model, str(temporary))
     temporary.replace(path)
