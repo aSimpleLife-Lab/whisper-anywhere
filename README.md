@@ -40,6 +40,7 @@ New:
 - **Type the last dictation again**: `Ctrl + Alt + V` types your last dictation into the app in front, for 5 minutes after you speak. Change it or turn it off in Settings
 - A quick tap of a mouse-button shortcut stays a normal click (M3 still opens links in new tabs); only a hold dictates
 - **Esc** also cancels after you let go: while your speech is turned into text, it goes to Last transcription instead of being typed; while it types, typing stops. While you record, Esc no longer reaches the game, so its menu doesn't open. Cancelling and errors have their own sounds
+- Long dictations: speech longer than 15 s is cut into overlapping windows and joined where the words agree, as the official Voz pipeline does. In six test passages the joins went from 8 wrong (a false full stop, a wrong capital or a doubled word, sent as-is with Enter on) to none
 
 Fixed, pasting:
 - Pasting is confirmed: Windows tells Whisper Anywhere when the app actually reads the text, and only then is your old clipboard put back and Enter pressed. A busy Discord or browser tab could paste and send your old clipboard; v0.2.5's check asked the wrong window. If the app never reads it, Enter is not pressed and the error sound plays
@@ -63,6 +64,7 @@ Fixed, microphone, models and engines:
 - A failed write of a small model marker threw away a finished dictation, and picking a model during a download or dictation marked the wrong one installed
 - Whisper's first download, and every SenseVoice and Fun-ASR load, went online with the shortcut off and no timeout. They now download first, with timeouts. SenseVoice and Fun-ASR models now live in the model folder: they download once more, and the old copies in `%USERPROFILE%\.cache\huggingface\hub` can be deleted. SenseVoice no longer types emoji
 - Model sizes in the list were two to four times too small
+- Voz's CPU copy of the model is checked against the model files, so a model update can no longer leave every dictation empty, and a damaged copy rebuilds itself. Downloads are checked against the published checksums, not just their size
 
 Fixed, settings, startup and privacy:
 - **Start with Windows** showed on while Task Manager had turned it off, and any copy of the app took over the startup entry. The switch now shows what Windows will do and says when Task Manager turned it off; switching it on turns it back on there too. Uninstalling only removes the entry if it points at the installed app
@@ -73,6 +75,7 @@ Fixed, settings, startup and privacy:
 - First-run setup and the tour popped up on a hidden sign-in start when the settings file was missing
 
 Lighter:
+- About 15–35% less CPU per Voz dictation, at the same speed: ONNX Runtime's threads now spin only briefly while they wait, instead of keeping every core busy
 - numpy no longer starts 23 idle threads and commits 747 MB
 - The listening animation draws its equaliser once per step instead of every frame, two to three times cheaper, and it no longer stays at full speed after an error
 - The model list no longer checks the model folders on every repaint
