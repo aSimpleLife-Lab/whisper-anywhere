@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import html
 import json
 import os
@@ -8,6 +9,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
@@ -44,11 +46,17 @@ from core import app_log, voz_engine
 from core.app_icon import app_icon, apply_native_window_icon
 from core.app_version import APP_VERSION, GITHUB_RELEASES_API, GITHUB_RELEASES_URL
 from core.audio_recorder import SAMPLE_RATE, AudioRecorder, AudioRecorderError
-from core.hotkey_listener import parse_shortcut, shortcut_warning
+from core.hotkey_listener import TAP_SECONDS, parse_shortcut, shortcut_problem, shortcut_warning
 from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager, StartupManagerError
-from core.text_inserter import PRIVATE_CLIPBOARD_FORMATS, TextInserter, TextInsertionError, TextTarget
+from core.text_inserter import (
+    PRIVATE_CLIPBOARD_FORMATS,
+    InsertionCancelled,
+    TextInserter,
+    TextInsertionError,
+    TextTarget,
+)
 from core.transcriber import Transcriber
 from ui.horizon import MicWheel, VoiceHorizon
 from ui.widgets import (
@@ -75,6 +83,31 @@ TRANSCRIPTION_TIMEOUT_SECONDS = 90.0
 # Nothing new on disk for this long means a model download or load is stuck.
 MODEL_PREPARE_STALL_SECONDS = 300.0
 WARM_UP_DELAY_MS = 1500
+TOO_SHORT_SECONDS = 0.25  # a keyboard tap: nothing worth transcribing
+# Typing gives up after this, plus a little per character for games.
+INSERT_TIMEOUT_SECONDS = 20.0
+INSERT_SECONDS_PER_CHAR = 0.02
+RETYPE_KEEP_MS = 5 * 60 * 1000  # the last dictation can be typed again for 5 minutes
+DEVICE_SETTLE_MS = 1500  # USB and Bluetooth changes arrive in bursts
+UNLOAD_CHOICES = (
+    ("Never", "never"),
+    ("After 5 idle minutes", "5"),
+    ("After 15 idle minutes", "15"),
+    ("After 60 idle minutes", "60"),
+    ("After every dictation", "each"),
+)
+INSERT_CHOICES = (("Auto", "auto"), ("Paste", "paste"), ("Type", "type"))
+SEND_CHOICES = (("Default", "default"), ("Enter", "enter"), ("Ctrl+Enter", "ctrl+enter"), ("Nothing", "none"))
+FULL_STOP_CHOICES = (("Default", "default"), ("On", "on"), ("Off", "off"))
+NEW_PROFILE = {"insert_method": "auto", "send_key": "default", "full_stop": "default"}
+# Messages the window watches for (see nativeEvent).
+WM_DEVICECHANGE = 0x0219
+DBT_DEVNODES_CHANGED = 0x0007
+WM_POWERBROADCAST = 0x0218
+PBT_APMRESUMEAUTOMATIC = 0x0012
+WM_WTSSESSION_CHANGE = 0x02B1
+WTS_SESSION_UNLOCK = 0x8
+NOTIFY_FOR_THIS_SESSION = 0
 ERROR_STATUSES = {"Error", "Hotkey error", "Startup setting problem", "Update check failed"}
 SPEED_LEVELS = {"Fastest": 5, "Very fast": 5, "Fast": 4, "Balanced": 3, "Moderate": 2, "Slow": 1}
 ACCURACY_LEVELS = {
@@ -98,6 +131,17 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 def _sanitize_path_text(value: str) -> str:
     return re.sub(r"[A-Za-z]:\\Users\\[^\\\r\n]+", r"%USERPROFILE%", str(value or ""))
+
+
+def _copy_profiles(settings_manager: SettingsManager) -> dict[str, dict[str, str]]:
+    saved = settings_manager.get("app_profiles", {}) or {}
+    return {name: dict(profile) for name, profile in saved.items()} if isinstance(saved, dict) else {}
+
+
+def _error_text(exc: BaseException) -> str:
+    """An exception's message, or its name when it has none: a bare
+    exception showed a blank red error."""
+    return str(exc) or exc.__class__.__name__
 
 
 def _linkify(text: str) -> str:
@@ -171,7 +215,7 @@ class _ModelDelegate(QStyledItemDelegate):
         manager = self.window.model_manager
         if name == manager.selected_model():
             state, colour = "In use", COLORS["cyan"]
-        elif manager.is_model_ready(name):
+        elif self.window._model_ready.get(name, False):  # checked on refresh, not every repaint
             state, colour = "Installed", COLORS["muted"]
         else:
             state, colour = MODEL_INFO[name].approximate_size, "#6B7782"
@@ -411,11 +455,68 @@ class SettingsWindow(ShellDialog):
         self.start_with_windows = ToggleRow("Start with Windows", "Launches hidden in the tray when you sign in.")
         self.keep_in_tray = ToggleRow("Keep running in tray when closed", "The shortcut keeps working; exit from the tray menu.")
         self.debug_log = ToggleRow("Write a debug log to disk", "Event names and timings only. Nothing you say is logged.")
+        self.startup_note = label("", "warning", wrap=True)
+        self.startup_note.setVisible(False)
         for index, row in enumerate((self.start_with_windows, self.keep_in_tray, self.debug_log)):
             if index:
                 system_layout.addWidget(divider())
             system_layout.addWidget(row)
+            if row is self.start_with_windows:
+                system_layout.addWidget(self.startup_note)
         self.body.addWidget(system)
+
+        self._window = parent
+        self.body.addWidget(CubeTitle("Type the last dictation again"))
+        retype = QFrame()
+        retype.setObjectName("glass")
+        retype_layout = QVBoxLayout(retype)
+        retype_layout.setContentsMargins(14, 10, 14, 12)
+        retype_layout.setSpacing(8)
+        retype_layout.addWidget(
+            label(
+                "For when the text didn't arrive: this shortcut types your last dictation into the app in "
+                "front. It works for 5 minutes after you speak; nothing is kept after that.",
+                "small",
+                wrap=True,
+            )
+        )
+        retype_row = QHBoxLayout()
+        retype_row.setSpacing(8)
+        self.retype_input = ShortcutCaptureInput()
+        self.retype_input.setPlaceholderText("Off. Click to set one.")
+        self.retype_off_button = button("Turn off")
+        retype_row.addWidget(self.retype_input, 1)
+        retype_row.addWidget(self.retype_off_button)
+        retype_layout.addLayout(retype_row)
+        self.body.addWidget(retype)
+
+        self.body.addWidget(CubeTitle("App profiles"))
+        profiles = QFrame()
+        profiles.setObjectName("glass")
+        self.profiles_layout = QVBoxLayout(profiles)
+        self.profiles_layout.setContentsMargins(14, 10, 14, 12)
+        self.profiles_layout.setSpacing(8)
+        self.profiles_layout.addWidget(
+            label(
+                "Typing per app, picked by the app you dictate into. Type suits games that ignore Ctrl+V; "
+                "Nothing as the send key keeps Enter from running a terminal command. Default follows "
+                "the switches in the main window.",
+                "small",
+                wrap=True,
+            )
+        )
+        self.profile_table: QWidget | None = None
+        add_row = QHBoxLayout()
+        add_row.setSpacing(8)
+        self.profile_name_combo = SafeComboBox()
+        self.profile_name_combo.setEditable(True)
+        self.profile_name_combo.lineEdit().setPlaceholderText("discord.exe")
+        self.profile_name_combo.setToolTip("Apps you dictated into recently, or type a program name")
+        self.add_profile_button = button("Add app")
+        add_row.addWidget(self.profile_name_combo, 1)
+        add_row.addWidget(self.add_profile_button)
+        self.profiles_layout.addLayout(add_row)
+        self.body.addWidget(profiles)
 
         # The rarely touched model and GPU switches live here, so the main
         # window's columns fit without scrolling.
@@ -501,6 +602,51 @@ class SettingsWindow(ShellDialog):
         self.activity_view.verticalScrollBar().setValue(self.activity_view.verticalScrollBar().maximum())
         super().showEvent(event)
 
+    def show_profiles(self, profiles: dict[str, dict[str, str]], recent_apps: list[str]) -> None:
+        if self.profile_table is not None:
+            self.profile_table.setParent(None)
+            self.profile_table.deleteLater()
+        table = QWidget()
+        grid = QGridLayout(table)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        if profiles:
+            for column, caption in enumerate(("App", "Insert", "Send key", "Full stop")):
+                grid.addWidget(label(caption, "small"), 0, column)
+        choices = (
+            ("insert_method", INSERT_CHOICES, "Paste with Ctrl+V, or type key by key"),
+            ("send_key", SEND_CHOICES, "The key pressed after the text"),
+            ("full_stop", FULL_STOP_CHOICES, "End the text with a full stop"),
+        )
+        for row, (name, profile) in enumerate(sorted(profiles.items()), start=1):
+            app = label(name)
+            app.setToolTip(name)
+            grid.addWidget(app, row, 0)
+            for column, (field, options, tip) in enumerate(choices, start=1):
+                combo = SafeComboBox()
+                combo.setFixedWidth(92)
+                combo.setToolTip(tip)
+                for text, value in options:
+                    combo.addItem(text, value)
+                combo.setCurrentIndex(max(0, combo.findData(profile.get(field))))
+                combo.currentIndexChanged.connect(
+                    lambda index=0, app_name=name, key=field, box=combo: self._window.save_app_profile(
+                        app_name, key, str(box.currentData())
+                    )
+                )
+                grid.addWidget(combo, row, column)
+            remove = button(GLYPHS["close"], "icon")
+            remove.setToolTip(f"Remove the profile for {name}")
+            remove.clicked.connect(lambda checked=False, app_name=name: self._window.remove_app_profile(app_name))
+            grid.addWidget(remove, row, 4)
+        grid.setColumnStretch(0, 1)
+        self.profiles_layout.insertWidget(1, table)
+        self.profile_table = table
+        self.profile_name_combo.clear()
+        self.profile_name_combo.addItems([app for app in recent_apps if app not in profiles])
+        self.profile_name_combo.setEditText("")
+
 
 class MainWindow(QMainWindow):
     model_changed = Signal(str)
@@ -512,7 +658,13 @@ class MainWindow(QMainWindow):
     level_changed = Signal(float)
     transcription_done = Signal(int, str, float, float)
     transcription_failed = Signal(int, str)
-    insertion_done = Signal(str)
+    insertion_done = Signal(int, str, str)  # insert id; "done", "note", "cancelled" or "error"; message
+    insert_timeout = Signal(int)
+    cue = Signal(str)  # "cancel" or "error"
+    rehook_requested = Signal()  # after unlock and resume Windows may have dropped the hooks
+    escape_hold_changed = Signal(bool)  # Esc cancels instead of reaching the app while recording
+    retype_shortcut_changed = Signal(str)
+    unload_done = Signal()
     transcription_timeout = Signal(int)
     model_ready = Signal(int, str)
     model_failed = Signal(int, str)
@@ -562,6 +714,34 @@ class MainWindow(QMainWindow):
         self._warm_up_timer.setSingleShot(True)
         self._warm_up_timer.setInterval(WARM_UP_DELAY_MS)
         self._warm_up_timer.timeout.connect(self.warm_up_selected_model)
+        # Whether the transcription under way gets typed: Esc and a stuck
+        # shortcut keep the text in Last transcription instead.
+        self._deliver = True
+        self._undelivered_reason = ""
+        self._insert_id = 0
+        self._active_insert_id = 0
+        self._insert_cancel: threading.Event | None = None
+        self._insert_timer: threading.Timer | None = None
+        self._retype_text = ""  # memory only, forgotten after RETYPE_KEEP_MS
+        self._retype_timer = QTimer(self)
+        self._retype_timer.setSingleShot(True)
+        self._retype_timer.setInterval(RETYPE_KEEP_MS)
+        self._retype_timer.timeout.connect(self._forget_retype)
+        self._recent_apps: list[str] = []  # where dictations went this session, for profiles
+        self._model_ready: dict[str, bool] = {}  # the list paints often; the Voz check stats F:
+        # A mouse shortcut tapped within TAP_SECONDS stays a click, so its start
+        # sound waits until it is a hold.
+        self._cue_timer = QTimer(self)
+        self._cue_timer.setSingleShot(True)
+        self._cue_timer.setInterval(int(TAP_SECONDS * 1000))
+        self._cue_timer.timeout.connect(self._play_delayed_start_cue)
+        self._idle_unload_timer = QTimer(self)
+        self._idle_unload_timer.setSingleShot(True)
+        self._idle_unload_timer.timeout.connect(self._idle_unload)
+        self._device_timer = QTimer(self)
+        self._device_timer.setSingleShot(True)
+        self._device_timer.setInterval(DEVICE_SETTLE_MS)
+        self._device_timer.timeout.connect(self._devices_changed)
 
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -574,12 +754,18 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
         self.settings_window = SettingsWindow(self)
         apply_native_window_icon(int(self.winId()))
+        try:  # unlock tells us to re-hook the shortcut (see nativeEvent)
+            ctypes.windll.wtsapi32.WTSRegisterSessionNotification(
+                wintypes.HWND(int(self.winId())), NOTIFY_FOR_THIS_SESSION
+            )
+        except (AttributeError, OSError):
+            pass
         self._connect_signals()
         self._load_settings_into_ui()
         self.set_status("Ready", self._ready_detail())
         self._refresh_model_status()
-        if not bool(self.settings_manager.get("first_run_setup_completed", False)):
-            QTimer.singleShot(500, self.show_first_run_setup)
+        # First-run setup waits for the window to be shown (showEvent): a hidden
+        # sign-in start must not pop it up over a game.
         self._warm_up_timer.start()
 
     # ------------------------------------------------------------------ layout
@@ -878,17 +1064,23 @@ class MainWindow(QMainWindow):
             ("float32", "float32"),
         ):
             self.compute_combo.addItem(text, value)
+        # One control instead of "Keep the model loaded" and "Low RAM mode",
+        # which disagreed: Low RAM reloaded the model for every dictation.
+        self.unload_combo = SafeComboBox()
+        for text, value in UNLOAD_CHOICES:
+            self.unload_combo.addItem(text, value)
+        self.unload_combo.setToolTip(
+            "Frees the model's memory (about 0.6 GB for Voz) when you stop dictating. "
+            "The first dictation after that loads it again, which takes a couple of seconds."
+        )
         grid.addWidget(label("CPU threads"), 0, 0)
         grid.addWidget(self.cpu_threads_combo, 0, 1)
         grid.addWidget(label("Whisper precision"), 1, 0)
         grid.addWidget(self.compute_combo, 1, 1)
+        grid.addWidget(label("Free memory"), 2, 0)
+        grid.addWidget(self.unload_combo, 2, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
-        layout.addSpacing(6)
-        self.keep_model_loaded_row = ToggleRow("Keep the model loaded", "Dictation starts instantly.")
-        self.low_ram_row = ToggleRow("Low RAM mode", "Unload after every dictation, CPU only.")
-        layout.addWidget(self.keep_model_loaded_row)
-        layout.addWidget(self.low_ram_row)
         layout.addStretch(1)
         stack.addWidget(panel, 1)
         # These four live in the Settings window (see SettingsWindow).
@@ -941,15 +1133,16 @@ class MainWindow(QMainWindow):
             self.horizon.set_window_active(self.isActiveWindow())
 
     def showEvent(self, event) -> None:
-        super().showEvent(event)
+        QMainWindow.showEvent(self, event)
         self.horizon.set_animated(True)
-        # Existing installs see the tour once, the first time the window is actually
-        # opened (never on a tray-only start, so it cannot pop up over a game).
-        if (
-            not self._tutorial_pending
-            and bool(self.settings_manager.get("first_run_setup_completed", False))
-            and not bool(self.settings_manager.get("tutorial_seen", False))
-        ):
+        # Setup and the tour show once, the first time the window is actually
+        # opened: never on a tray-only start, so they cannot pop up over a game.
+        if self._tutorial_pending:
+            return
+        if not bool(self.settings_manager.get("first_run_setup_completed", False)):
+            self._tutorial_pending = True  # setup ends with the tour
+            QTimer.singleShot(500, self.show_first_run_setup)
+        elif not bool(self.settings_manager.get("tutorial_seen", False)):
             self._tutorial_pending = True
             QTimer.singleShot(700, self.show_tutorial)
 
@@ -963,6 +1156,24 @@ class MainWindow(QMainWindow):
         self.horizon.set_animated(False)
         super().hideEvent(event)
 
+    def nativeEvent(self, event_type, message):
+        """Unlock and resume can leave Windows without our shortcut hooks, and
+        plugging a microphone in or out renumbers the device list."""
+        if bytes(event_type) == b"windows_generic_MSG":
+            msg = wintypes.MSG.from_address(int(message))
+            if (msg.message == WM_WTSSESSION_CHANGE and msg.wParam == WTS_SESSION_UNLOCK) or (
+                msg.message == WM_POWERBROADCAST and msg.wParam == PBT_APMRESUMEAUTOMATIC
+            ):
+                self.rehook_requested.emit()
+            elif msg.message == WM_DEVICECHANGE and msg.wParam == DBT_DEVNODES_CHANGED:
+                self.audio_recorder.mark_devices_changed()  # the next recording rescans first
+                self._device_timer.start()
+        return False, 0
+
+    def _devices_changed(self) -> None:
+        if not self._is_listening:  # never rescan under an open stream
+            self.refresh_microphones()
+
     # ----------------------------------------------------------------- signals
 
     def _connect_signals(self) -> None:
@@ -974,7 +1185,7 @@ class MainWindow(QMainWindow):
         self.mic_button.clicked.connect(lambda checked=False: self.toggle_manual_listening())
         self.listen_button.clicked.connect(lambda checked=False: self.toggle_manual_listening())
         self.copy_transcript_button.clicked.connect(lambda checked=False: self.copy_transcript())
-        self.clear_transcript_button.clicked.connect(lambda checked=False: self.last_transcript.clear())
+        self.clear_transcript_button.clicked.connect(lambda checked=False: self.clear_transcript())
         self.model_list.currentItemChanged.connect(lambda current, previous: self._show_model_details())
         self.model_list.itemDoubleClicked.connect(lambda item: self.use_highlighted_model())
         self.use_model_button.clicked.connect(lambda checked=False: self.use_highlighted_model())
@@ -1001,9 +1212,8 @@ class MainWindow(QMainWindow):
         self.device_segmented.changed.connect(lambda value: self.save_performance_settings())
         for combo in (self.compute_combo, self.cpu_threads_combo):
             combo.currentIndexChanged.connect(lambda index=0: self.save_performance_settings())
+        self.unload_combo.currentIndexChanged.connect(lambda index=0: self.save_unload_setting())
         for row in (
-            self.keep_model_loaded_row,
-            self.low_ram_row,
             self.low_vram_row,
             self.fallback_cpu_row,
             self.auto_download_row,
@@ -1027,10 +1237,19 @@ class MainWindow(QMainWindow):
         settings.open_model_folder_button.clicked.connect(
             lambda checked=False: self._open_folder(self.model_manager.model_storage_path())
         )
+        settings.add_profile_button.clicked.connect(
+            lambda checked=False: self.add_app_profile(settings.profile_name_combo.currentText())
+        )
+        settings.retype_input.capture_started.connect(self._start_retype_capture)
+        settings.retype_input.shortcut_captured.connect(self.save_retype_shortcut)
+        settings.retype_input.capture_cancelled.connect(self._end_retype_capture)
+        settings.retype_off_button.clicked.connect(lambda checked=False: self.save_retype_shortcut(""))
         self.level_changed.connect(self.update_level)
         self.transcription_done.connect(self.finish_transcription)
         self.transcription_failed.connect(self.fail_transcription)
         self.insertion_done.connect(self.finish_insertion)
+        self.insert_timeout.connect(self.handle_insert_timeout)
+        self.unload_done.connect(self._refresh_model_status)
         self.transcription_timeout.connect(self.handle_transcription_timeout)
         self.model_ready.connect(self.finish_model_prepare)
         self.model_failed.connect(self.fail_model_prepare)
@@ -1054,9 +1273,10 @@ class MainWindow(QMainWindow):
             self.feedback_volume_slider.setValue(round(float(get("feedback_volume", 0.5)) * 100))
             self._feedback_volume_moved(self.feedback_volume_slider.value())
             settings = self.settings_window
-            settings.start_with_windows.switch.setChecked(bool(get("start_with_windows", False)))
+            self._show_startup_state()
             settings.keep_in_tray.switch.setChecked(bool(get("minimize_to_tray", True)))
             settings.debug_log.switch.setChecked(bool(get("debug_logs", False)))
+            settings.retype_input.setText(str(get("retype_shortcut", "") or ""))
             self._restore_performance_controls()
         finally:
             self._loading_ui = False
@@ -1080,8 +1300,7 @@ class MainWindow(QMainWindow):
             self._select_combo_data(self.cpu_threads_combo, threads)
             self.fallback_cpu_row.switch.setChecked(bool(get("fallback_to_cpu", True)))
             self.low_vram_row.switch.setChecked(bool(get("low_vram_mode", False)))
-            self.keep_model_loaded_row.switch.setChecked(bool(get("keep_model_loaded", True)))
-            self.low_ram_row.switch.setChecked(bool(get("low_ram_mode", False)))
+            self._select_combo_data(self.unload_combo, str(get("unload_model_after", "never")))
             self.auto_download_row.switch.setChecked(bool(get("auto_download_models", True)))
             self.warn_large_row.switch.setChecked(bool(get("warn_before_large_models", True)))
         finally:
@@ -1189,6 +1408,7 @@ class MainWindow(QMainWindow):
     def _refresh_model_status(self) -> None:
         selected = self.model_manager.selected_model()
         info = self.model_manager.selected_info()
+        self._model_ready = {model.name: self.model_manager.is_model_ready(model.name) for model in self.model_manager.models()}
         self.settings_window.open_model_folder_button.setToolTip(
             str(self.model_manager.model_storage_path())
         )
@@ -1245,6 +1465,32 @@ class MainWindow(QMainWindow):
     def _schedule_warm_up(self) -> None:
         self._warm_up_timer.start()
 
+    def _arm_idle_unload(self) -> None:
+        """Restarts the countdown to freeing the model. "never" has none, and
+        "each" frees it inside the transcriber after every dictation."""
+        value = str(self.settings_manager.get("unload_model_after", "never"))
+        if value.isdigit():
+            self._idle_unload_timer.start(int(value) * 60 * 1000)
+        else:
+            self._idle_unload_timer.stop()
+
+    def _idle_unload(self) -> None:
+        if self._pipeline_busy():
+            self._arm_idle_unload()  # try again after the next idle stretch
+            return
+        transcriber = self.transcriber
+        if not transcriber.is_loaded():
+            return
+        self._append_activity_log("idle: freeing the model")
+        threading.Thread(target=self._unload_worker, args=(transcriber,), daemon=True).start()
+
+    def _unload_worker(self, transcriber: Transcriber) -> None:
+        try:
+            transcriber.unload()  # pauses the hooks: freeing it holds the GIL ~80 ms
+        except Exception as exc:
+            self._append_activity_log(f"unload failed: {_error_text(exc)}")
+        self.unload_done.emit()
+
     def reset_speech_engine(self) -> None:
         if self._pipeline_busy():
             self.set_status("Busy", self._pipeline_busy_message())
@@ -1267,27 +1513,27 @@ class MainWindow(QMainWindow):
             self._pipeline_busy()
             or self.transcriber.is_loaded()
             or not self.model_manager.is_model_ready()
-            or not bool(settings.get("keep_model_loaded", True))
-            or bool(settings.get("low_ram_mode", False))
+            or str(settings.get("unload_model_after", "never")) == "each"
         ):
             return
         self._warm_up_generation += 1
         generation = self._warm_up_generation
         transcriber = self.transcriber
-        self._append_activity_log(f"warm-up start: {self.model_manager.selected_model()}")
+        model_name = self.model_manager.selected_model()
+        self._append_activity_log(f"warm-up start: {model_name}")
         self.model_status.setText(f"Loading {self.model_manager.selected_info().label} into memory...")
         threading.Thread(
-            target=self._warm_up_worker, args=(generation, transcriber, settings), daemon=True
+            target=self._warm_up_worker, args=(generation, transcriber, settings, model_name), daemon=True
         ).start()
 
     def _warm_up_worker(
-        self, generation: int, transcriber: Transcriber, settings: dict[str, Any]
+        self, generation: int, transcriber: Transcriber, settings: dict[str, Any], model_name: str
     ) -> None:
         started = time.perf_counter()
         try:
-            transcriber.prepare_selected_model(settings)
+            transcriber.prepare_selected_model(settings, model_name=model_name)
         except Exception as exc:
-            self.warm_up_done.emit(generation, str(exc) or exc.__class__.__name__)
+            self.warm_up_done.emit(generation, _error_text(exc))
         else:
             self._append_activity_log(f"warm-up done in {time.perf_counter() - started:.1f}s")
             self.warm_up_done.emit(generation, "")
@@ -1297,6 +1543,7 @@ class MainWindow(QMainWindow):
             return
         if error:
             self._append_activity_log(f"warm-up failed: {error}")
+        self._arm_idle_unload()  # a model nobody dictates with is freed too
         self._refresh_model_status()
         if error and not self._pipeline_busy():
             self.set_status("Ready", f"The model will load on first use. ({error})")
@@ -1311,6 +1558,10 @@ class MainWindow(QMainWindow):
             normalized
         ):
             self._sync_model_list()
+            return
+        if self._pipeline_busy():  # a dictation started while the question was open
+            self._sync_model_list()
+            self.set_status("Busy", self._pipeline_busy_message())
             return
         self.model_manager.select_model(normalized)
         self._reset_transcriber()
@@ -1328,8 +1579,6 @@ class MainWindow(QMainWindow):
             warnings.append(
                 "Large local speech models need much more RAM or VRAM and can take longer to load."
             )
-        if self.low_ram_row.switch.isChecked() and model_name in LARGE_MODELS:
-            warnings.append("Low RAM mode is on, so a smaller model is safer.")
         if self.low_vram_row.switch.isChecked() and model_name in {"large", "large-v2", "large-v3"}:
             warnings.append("Low VRAM mode is on, so large models may be slow or fail on smaller GPUs.")
         if not warnings:
@@ -1376,6 +1625,8 @@ class MainWindow(QMainWindow):
         ):
             if not self._confirm_model_choice(selected):
                 return
+        if self._is_listening or self._is_transcribing or selected != self.model_manager.selected_model():
+            return  # things moved on while a question was open
 
         self._is_preparing_model = True
         self._model_prepare_started_at = time.monotonic()
@@ -1398,19 +1649,20 @@ class MainWindow(QMainWindow):
         self._append_activity_log(f"model prepare start: {selected}")
         threading.Thread(
             target=self._prepare_model_worker,
-            args=(request_id, settings, transcriber),
+            args=(request_id, settings, transcriber, selected),
             daemon=True,
         ).start()
 
     def _prepare_model_worker(
-        self, request_id: int, settings: dict[str, Any], transcriber: Transcriber
+        self, request_id: int, settings: dict[str, Any], transcriber: Transcriber, model_name: str
     ) -> None:
+        # The name is pinned: a model picked meanwhile was marked installed instead.
         try:
-            transcriber.prepare_selected_model(settings)
+            transcriber.prepare_selected_model(settings, model_name=model_name)
         except Exception as exc:
-            self.model_failed.emit(request_id, str(exc))
+            self.model_failed.emit(request_id, _error_text(exc))
         else:
-            self.model_ready.emit(request_id, self.model_manager.selected_model())
+            self.model_ready.emit(request_id, model_name)
 
     def _end_model_prepare(self) -> None:
         self._cancel_model_prepare_timer()
@@ -1424,6 +1676,7 @@ class MainWindow(QMainWindow):
             return
         self._end_model_prepare()
         self._append_activity_log(f"model prepare done: {model_name}")
+        self._arm_idle_unload()
         self._refresh_model_status()
         self.set_status("Ready", self.transcriber.runtime_message or self._ready_detail())
 
@@ -1489,21 +1742,41 @@ class MainWindow(QMainWindow):
         if self._is_listening and str(self.settings_manager.get("shortcut_mode", "hold")) == "toggle":
             self.stop_listening_and_transcribe()
         else:
-            self.start_listening()
+            self.start_listening(from_shortcut=True)
 
     def _append_activity_log(self, message: str) -> None:
         app_log.log(message)
 
+    def _set_listening(self, listening: bool) -> None:
+        self._is_listening = listening
+        self.escape_hold_changed.emit(listening)  # Esc cancels instead of opening a game menu
+        if not listening:
+            self._cue_timer.stop()
+
+    def _play_delayed_start_cue(self) -> None:
+        if self._is_listening:
+            self.feedback.emit(True)
+
+    def _mouse_hold_shortcut(self) -> bool:
+        if str(self.settings_manager.get("shortcut_mode", "hold")) != "hold":
+            return False
+        try:
+            return parse_shortcut(str(self.settings_manager.get("shortcut", ""))).mouse_trigger is not None
+        except ValueError:
+            return False
+
     def _dictation_toggled(self, enabled: bool) -> None:
         if self._loading_ui:
             return
+        if not enabled and self._is_listening:
+            self.cancel_listening()  # the shortcut that would end it is about to stop
         self.hotkey_enabled_changed.emit(enabled)
         self.set_status(
             "Ready" if enabled else "Paused",
             self._ready_detail() if enabled else "The shortcut is paused. Turn Dictation on to use it again.",
         )
 
-    def start_listening(self) -> None:
+    def start_listening(self, from_shortcut: bool = False) -> None:
         if self._is_capturing_shortcut:
             self._append_activity_log("start ignored: shortcut capture active")
             return
@@ -1526,12 +1799,8 @@ class MainWindow(QMainWindow):
             return
 
         microphone_id = self._selected_microphone_id()
-        current_target = self.text_inserter.get_foreground_window()
-        own_window_hwnd = int(self.winId())
-        if current_target and current_target.window_hwnd != own_window_hwnd:
-            self._target_hwnd = current_target
-        else:
-            self._target_hwnd = None
+        # None for this app's own windows and the taskbar: nothing to type into.
+        self._target_hwnd = self.text_inserter.get_foreground_window()
         try:
             self.audio_recorder.start(str(microphone_id), self.level_changed.emit)
         except AudioRecorderError:
@@ -1541,11 +1810,15 @@ class MainWindow(QMainWindow):
                 self.audio_recorder.start(self._resolve_saved_microphone() or "default", self.level_changed.emit)
             except AudioRecorderError as exc:
                 self._append_activity_log("microphone start failed")
-                self.set_status("Error", str(exc))
+                self.cue.emit("error")
+                self.set_status("Error", _error_text(exc))
                 return
         self._append_activity_log("listening")
-        self._is_listening = True
-        self.feedback.emit(True)
+        self._set_listening(True)
+        if from_shortcut and self._mouse_hold_shortcut():
+            self._cue_timer.start()  # a tap stays a click and gets no sound
+        else:
+            self.feedback.emit(True)
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.set_status(
             "Listening",
@@ -1565,16 +1838,18 @@ class MainWindow(QMainWindow):
         self.refresh_microphones()
         return "default"
 
-    def stop_listening_and_transcribe(self, release_window_hwnd: object = None) -> None:
+    def stop_listening_and_transcribe(self, release_window_hwnd: object = None, deliver: bool = True) -> None:
         if not self._is_listening:
             return
-        self._is_listening = False
+        self._set_listening(False)
         self.feedback.emit(False)
         try:
             release_window = int(release_window_hwnd) if release_window_hwnd is not None else None
         except (TypeError, ValueError):
             release_window = None
         if release_window:
+            # Title and app as they were at release: a chat switch while it
+            # transcribes is caught by comparing them (no Enter then).
             captured_target = self.text_inserter.get_window_target(release_window)
             if captured_target is not None:
                 self._target_hwnd = captured_target
@@ -1582,10 +1857,19 @@ class MainWindow(QMainWindow):
             audio = self.audio_recorder.stop()
         except AudioRecorderError as exc:
             self._append_activity_log("microphone stop failed")
-            self.set_status("Error", str(exc))
+            self.cue.emit("error")
+            self.set_status("Error", _error_text(exc))
+            return
+        if audio.size < TOO_SHORT_SECONDS * SAMPLE_RATE:
+            self._target_hwnd = None
+            self._append_activity_log("recording too short")
+            self.set_status("Ready", "Too short to type. Hold the shortcut while you speak.")
             return
 
         self._is_transcribing = True
+        self._deliver = deliver
+        self._undelivered_reason = "" if deliver else "timeout"
+        self._idle_unload_timer.stop()
         self._transcription_request_id += 1
         request_id = self._transcription_request_id
         self._active_transcription_id = request_id
@@ -1595,17 +1879,45 @@ class MainWindow(QMainWindow):
         self._start_transcription_timer(request_id, audio.size / SAMPLE_RATE)
         threading.Thread(
             target=self._transcribe_worker,
-            args=(request_id, audio, settings, self.transcriber),
+            args=(request_id, audio, settings, self.transcriber, self.model_manager.selected_model()),
             daemon=True,
         ).start()
 
-    def cancel_listening(self) -> None:
+    def stop_after_timeout(self) -> None:
+        """The shortcut's watchdog gave up waiting for the release (a missed
+        key-up, or a 5-minute hold): keep what was said, type nothing."""
+        if self._is_listening:
+            self.stop_listening_and_transcribe(deliver=False)
+
+    def drop_tapped_recording(self) -> None:
+        """A short tap of a mouse shortcut stays a normal click: the recording
+        it opened goes away without a sound."""
         if not self._is_listening:
             return
-        self._is_listening = False
+        self._set_listening(False)
         self.audio_recorder.cancel()
-        self._append_activity_log("recording cancelled")
-        self.set_status("Ready", "Recording cancelled.")
+        self._target_hwnd = None
+        self._append_activity_log("shortcut tapped: passed on as a click")
+        self.set_status("Ready", self._ready_detail())
+
+    def cancel_listening(self) -> None:
+        """Esc: drops a recording, or keeps a result from being typed."""
+        if self._is_listening:
+            self._set_listening(False)
+            self.audio_recorder.cancel()
+            self.cue.emit("cancel")
+            self._append_activity_log("recording cancelled")
+            self.set_status("Ready", "Recording cancelled.")
+        elif self._active_transcription_id and self._deliver:
+            self._deliver = False
+            self._undelivered_reason = "cancelled"
+            self.cue.emit("cancel")
+            self._append_activity_log("typing cancelled before the text was ready")
+            self.set_status("Transcribing", "Cancelled. The text will show in Last transcription but won't be typed.")
+        elif self._active_insert_id and self._insert_cancel is not None:
+            self._insert_cancel.set()  # stops before the next key it would send
+            self.cue.emit("cancel")
+            self._append_activity_log("typing cancelled")
 
     def _transcribe_worker(
         self,
@@ -1613,14 +1925,15 @@ class MainWindow(QMainWindow):
         audio: np.ndarray,
         settings: dict[str, Any],
         transcriber: Transcriber,
+        model_name: str,
     ) -> None:
         seconds = audio.size / SAMPLE_RATE
         started = time.perf_counter()
         try:
-            text = transcriber.transcribe(audio, settings)
+            text = transcriber.transcribe(audio, settings, model_name=model_name)
         except Exception as exc:
-            self._append_activity_log(f"transcription failed: id={request_id} {exc}")
-            self.transcription_failed.emit(request_id, str(exc))
+            self._append_activity_log(f"transcription failed: id={request_id} {exc.__class__.__name__}")
+            self.transcription_failed.emit(request_id, _error_text(exc))
             return
         elapsed = time.perf_counter() - started
         # Only sizes and timings are logged, never the words.
@@ -1637,46 +1950,164 @@ class MainWindow(QMainWindow):
         self._cancel_transcription_timer()
         self._active_transcription_id = 0
         self._is_transcribing = False
+        target, self._target_hwnd = self._target_hwnd, None
         self._show_last_dictation(text, audio_seconds, elapsed)
+        self._arm_idle_unload()
         if not text:
             self.set_status(
                 "Ready",
                 self.transcriber.runtime_message
                 or "No speech was detected. Try speaking closer to the microphone.",
             )
-            self._target_hwnd = None
             return
         self.last_transcript.setPlainText(text)
-        self.set_status("Typing", "Typing into the app you were using.")
-        # Typing can take seconds in games, so it runs off the UI thread; stay busy
-        # until it is done so a new recording cannot start in the middle of it.
+        self._remember_for_retype(text)
+        if not self._deliver:
+            if self._undelivered_reason == "timeout":
+                self.cue.emit("error")
+                self.set_status(
+                    "Not typed",
+                    "The shortcut seemed stuck, so the recording was stopped. The text is in Last "
+                    "transcription and was not typed.",
+                )
+            else:
+                self.set_status("Ready", "Cancelled. The text is in Last transcription and was not typed.")
+            return
+        if target is None:
+            self.set_status(
+                "Ready", "No app was in front to type into, so the text is in Last transcription."
+            )
+            return
+        self._start_insert(text, target)
+
+    def _start_insert(self, text: str, target: TextTarget) -> None:
+        # Busy first, then the status: the scene showed idle while it typed.
+        # Typing can take seconds in games, so it runs off the UI thread, and a
+        # new recording cannot start in the middle of it.
         self._is_transcribing = True
-        target, self._target_hwnd = self._target_hwnd, None
+        self.set_status("Typing", "Typing into the app you were using.")
+        self._remember_app(target)
+        self._insert_id += 1
+        insert_id = self._active_insert_id = self._insert_id
+        cancel = self._insert_cancel = threading.Event()
+        # A hung insert is called off with its token, so a late wake-up types
+        # nothing into whatever is in front by then.
+        timer = threading.Timer(
+            INSERT_TIMEOUT_SECONDS + INSERT_SECONDS_PER_CHAR * len(text),
+            lambda: self.insert_timeout.emit(insert_id),
+        )
+        timer.daemon = True
+        self._insert_timer = timer
+        timer.start()
         threading.Thread(
             target=self._insert_worker,
-            args=(text, target, self.settings_manager.all()),
+            args=(insert_id, text, target, self._settings_for(target), cancel),
             daemon=True,
         ).start()
 
-    def _insert_worker(self, text: str, target: TextTarget | None, settings: dict[str, Any]) -> None:
-        try:
-            self.text_inserter.insert_text(text, target, settings)
-        except TextInsertionError as exc:
-            self.insertion_done.emit(str(exc))
-            return
-        except Exception as exc:
-            self.insertion_done.emit(f"Could not type the text: {exc}")
-            return
-        self.insertion_done.emit("")
+    def _settings_for(self, target: TextTarget | None) -> dict[str, Any]:
+        """The typing settings with the target app's profile applied."""
+        settings = self.settings_manager.all()
+        profiles = settings.get("app_profiles") or {}
+        profile = profiles.get(getattr(target, "process_name", "") or "") if isinstance(profiles, dict) else None
+        if not isinstance(profile, dict):
+            return settings
+        if profile.get("insert_method", "auto") != "auto":
+            settings["insert_method"] = profile["insert_method"]
+        if profile.get("send_key", "default") != "default":
+            settings["send_key"] = profile["send_key"]
+        if profile.get("full_stop", "default") != "default":
+            settings["auto_punctuation"] = profile["full_stop"] == "on"
+        return settings
 
-    def finish_insertion(self, error: str) -> None:
+    def _insert_worker(
+        self,
+        insert_id: int,
+        text: str,
+        target: TextTarget,
+        settings: dict[str, Any],
+        cancel: threading.Event,
+    ) -> None:
+        try:
+            note = self.text_inserter.insert_text(text, target, settings, cancel=cancel)
+        except InsertionCancelled as exc:
+            self.insertion_done.emit(insert_id, "cancelled", _error_text(exc))
+        except TextInsertionError as exc:
+            self.insertion_done.emit(insert_id, "error", _error_text(exc))
+        except Exception as exc:
+            self.insertion_done.emit(insert_id, "error", f"Could not type the text: {_error_text(exc)}")
+        else:
+            self.insertion_done.emit(insert_id, "note" if note else "done", note or "")
+
+    def finish_insertion(self, insert_id: int, kind: str, message: str) -> None:
+        if insert_id != self._active_insert_id:
+            return  # the watchdog already gave up on it
+        self._active_insert_id = 0
+        self._insert_cancel = None
+        if self._insert_timer is not None:
+            self._insert_timer.cancel()
+            self._insert_timer = None
         self._is_transcribing = False
-        if error:
+        self._arm_idle_unload()
+        if kind == "error":
             self._append_activity_log("text insertion failed")
-            self.set_status("Error", error)
+            self.cue.emit("error")
+            self.set_status("Error", f"{message} {self._retype_hint()}".strip())
+        elif kind == "cancelled":
+            self._append_activity_log("text insertion cancelled")
+            self.set_status("Ready", message)
+        elif kind == "note":
+            self._append_activity_log("text inserted, send key skipped")
+            self.set_status("Not sent", message)
+        else:
+            self._append_activity_log("text inserted")
+            self.set_status("Ready", self.transcriber.runtime_message or self._ready_detail(done=True))
+
+    def handle_insert_timeout(self, insert_id: int) -> None:
+        if insert_id != self._active_insert_id:
             return
-        self._append_activity_log("text inserted")
-        self.set_status("Ready", self.transcriber.runtime_message or self._ready_detail(done=True))
+        if self._insert_cancel is not None:
+            self._insert_cancel.set()
+        self._insert_cancel = None
+        self._insert_timer = None
+        self._active_insert_id = 0
+        self._is_transcribing = False
+        self._append_activity_log("text insertion timed out")
+        self.cue.emit("error")
+        self.set_status(
+            "Error", f"Typing took too long and was stopped. The text is in Last transcription. {self._retype_hint()}".strip()
+        )
+
+    def _retype_hint(self) -> str:
+        shortcut = str(self.settings_manager.get("retype_shortcut", "") or "")
+        return f"Press {shortcut} to type it again." if shortcut else ""
+
+    def _remember_for_retype(self, text: str) -> None:
+        self._retype_text = text
+        self._retype_timer.start()
+
+    def _forget_retype(self) -> None:
+        self._retype_text = ""
+
+    def _remember_app(self, target: TextTarget) -> None:
+        name = str(getattr(target, "process_name", "") or "").lower()
+        if not name:
+            return
+        self._recent_apps = [name] + [app for app in self._recent_apps if app != name][:7]
+
+    def retype_last_dictation(self) -> None:
+        """The retype shortcut: the last dictation again, into the app in front."""
+        if not self._retype_text:
+            self.set_status("Ready", "There is no recent dictation to type again.")
+            return
+        if self._pipeline_busy():
+            self.set_status("Busy", self._pipeline_busy_message())
+            return
+        target = self.text_inserter.get_foreground_window()
+        if target is None:
+            self.set_status("Ready", "Click into the app to type into, then press the shortcut again.")
+            return
+        self._start_insert(self._retype_text, target)
 
     def _show_last_dictation(self, text: str, audio_seconds: float, elapsed: float) -> None:
         info = self.model_manager.selected_info()
@@ -1693,6 +2124,7 @@ class MainWindow(QMainWindow):
         self._cancel_transcription_timer()
         self._active_transcription_id = 0
         self._is_transcribing = False
+        self.cue.emit("error")
         self.set_status("Error", message)
         self._target_hwnd = None
 
@@ -1705,10 +2137,15 @@ class MainWindow(QMainWindow):
         self._target_hwnd = None
         self._append_activity_log(f"transcription timeout id={request_id}")
         self._reset_transcriber()
+        self.cue.emit("error")
         self.set_status(
             "Error",
             "Transcription took too long, so the speech engine was reset. Try again, or pick a faster model.",
         )
+
+    def clear_transcript(self) -> None:
+        self.last_transcript.clear()
+        self._forget_retype()  # cleared means gone: the retype shortcut types nothing either
 
     def copy_transcript(self) -> None:
         text = self.last_transcript.toPlainText()
@@ -1724,22 +2161,31 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- settings
 
-    def apply_shortcut_settings(self) -> None:
-        shortcut = self.shortcut_input.text().strip() or "Ctrl+Alt+Q"
+    def _shortcut_accepted(self, shortcut: str, saved: str) -> bool:
+        """Refuses shortcuts that cannot work (Esc cancels itself, a bare Enter
+        fires while typing) and asks before saving risky ones."""
         try:
             parse_shortcut(shortcut)
+            problem = shortcut_problem(shortcut)
         except ValueError as exc:
-            show_message(self, "Shortcut problem", str(exc))
-            return
+            problem = str(exc)
+        if problem:
+            show_message(self, "Shortcut problem", problem)
+            return False
         warning = shortcut_warning(shortcut)
-        saved = str(self.settings_manager.get("shortcut", ""))
         if warning and shortcut != saved:
-            if not show_message(
+            return show_message(
                 self, "Shortcut warning", f"{warning} Save this shortcut anyway?", ("Save it", "Cancel")
-            ):
-                self.shortcut_input.setText(saved)
-                self.set_status("Shortcut not saved", "Choose a safer shortcut or keep Ctrl+Alt+Q.")
-                return
+            )
+        return True
+
+    def apply_shortcut_settings(self) -> None:
+        shortcut = self.shortcut_input.text().strip() or "Ctrl+Alt+Q"
+        saved = str(self.settings_manager.get("shortcut", ""))
+        if not self._shortcut_accepted(shortcut, saved):
+            self.shortcut_input.setText(saved)
+            self.set_status("Shortcut not saved", "Choose a safer shortcut or keep Ctrl+Alt+Q.")
+            return
         mode = self.mode_segmented.value()
         self.shortcut_changed.emit(shortcut, mode)
         self.settings_manager.update({"shortcut": shortcut, "shortcut_mode": mode})
@@ -1748,15 +2194,18 @@ class MainWindow(QMainWindow):
 
     def start_shortcut_capture(self) -> None:
         self._is_capturing_shortcut = True
+        self.update_shortcut_warning()
         self.set_status("Shortcut capture", "Press the shortcut you want to use. Press Esc to cancel.")
 
     def finish_shortcut_capture(self, shortcut: str) -> None:
         self._is_capturing_shortcut = False
         self.shortcut_input.setText(shortcut)
         self.apply_shortcut_settings()
+        self.update_shortcut_warning()  # the box's own text changes came while capturing
 
     def cancel_shortcut_capture(self) -> None:
         self._is_capturing_shortcut = False
+        self.update_shortcut_warning()
         self.set_status("Ready", "Shortcut change cancelled.")
 
     def save_microphone_setting(self) -> None:
@@ -1776,13 +2225,66 @@ class MainWindow(QMainWindow):
             return
         self.settings_manager.update(
             {
-                "insert_method": "clipboard_paste",
                 "restore_clipboard": self.restore_clipboard_row.switch.isChecked(),
                 "add_space_after_text": self.add_space_row.switch.isChecked(),
                 "press_enter_after_text": self.press_enter_row.switch.isChecked(),
                 "auto_capitalization": self.capitalize_row.switch.isChecked(),
                 "auto_punctuation": self.period_row.switch.isChecked(),
             }
+        )
+
+    def add_app_profile(self, name: str) -> None:
+        name = str(name or "").strip().lower()
+        if len(name) <= 4 or not name.endswith(".exe") or any(char in name for char in '\\/:*?"<>|'):
+            self.set_status("Ready", "Type the app's program name, for example discord.exe.")
+            return
+        profiles = _copy_profiles(self.settings_manager)
+        profiles.setdefault(name, dict(NEW_PROFILE))
+        self.settings_manager.set("app_profiles", profiles)
+        self.settings_window.show_profiles(profiles, self._recent_apps)
+
+    def save_app_profile(self, name: str, field: str, value: str) -> None:
+        profiles = _copy_profiles(self.settings_manager)
+        if name in profiles:
+            profiles[name][field] = value
+            self.settings_manager.set("app_profiles", profiles)
+
+    def remove_app_profile(self, name: str) -> None:
+        profiles = _copy_profiles(self.settings_manager)
+        profiles.pop(name, None)
+        self.settings_manager.set("app_profiles", profiles)
+        self.settings_window.show_profiles(profiles, self._recent_apps)
+
+    def _start_retype_capture(self) -> None:
+        self._is_capturing_shortcut = True  # its keys must not start a dictation
+
+    def _end_retype_capture(self) -> None:
+        self._is_capturing_shortcut = False
+        self.settings_window.retype_input.setText(str(self.settings_manager.get("retype_shortcut", "") or ""))
+
+    def save_retype_shortcut(self, shortcut: str) -> None:
+        self._is_capturing_shortcut = False
+        shortcut = str(shortcut or "").strip()
+        problem = ""
+        if shortcut:
+            try:
+                parse_shortcut(shortcut)
+                problem = shortcut_problem(shortcut)
+            except ValueError as exc:
+                problem = str(exc)
+            main = str(self.settings_manager.get("shortcut", ""))
+            if not problem and shortcut.replace(" ", "").lower() == main.replace(" ", "").lower():
+                problem = "That is already the dictation shortcut."
+        if problem:
+            show_message(self, "Shortcut problem", problem)
+            self._end_retype_capture()
+            return
+        self.settings_manager.set("retype_shortcut", shortcut)
+        self.settings_window.retype_input.setText(shortcut)
+        self.retype_shortcut_changed.emit(shortcut)
+        self.set_status(
+            "Ready",
+            f"{shortcut} types the last dictation again." if shortcut else "The retype shortcut is off.",
         )
 
     def _feedback_volume_moved(self, value: int) -> None:
@@ -1803,18 +2305,36 @@ class MainWindow(QMainWindow):
         try:
             self.startup_manager.set_enabled(enabled)
         except StartupManagerError as exc:
-            switch.blockSignals(True)
-            switch.setChecked(not enabled)
-            switch.blockSignals(False)
+            self._show_startup_state()
             self.set_status("Error", str(exc))
             return
         self.settings_manager.set("start_with_windows", enabled)
+        self._show_startup_state()
         self.set_status(
             "Ready",
             "Whisper Anywhere will start hidden in the tray when Windows starts."
             if enabled
             else "Whisper Anywhere will not start with Windows.",
         )
+
+    def _show_startup_state(self) -> None:
+        """The switch shows what Windows will really do: Task Manager can turn
+        the entry off without telling the app, and another copy can own it."""
+        try:
+            state = self.startup_manager.state()
+        except StartupManagerError:
+            state = "off"
+        settings = self.settings_window
+        switch = settings.start_with_windows.switch
+        was_blocked = switch.blockSignals(True)
+        switch.setChecked(state == "on")
+        switch.blockSignals(was_blocked)
+        note = {
+            "disabled": "Turned off in Task Manager's Startup apps. Switch it on here to turn it back on.",
+            "other": "Another copy of Whisper Anywhere starts with Windows. Switch it on to start this copy instead.",
+        }.get(state, "")
+        settings.startup_note.setText(note)
+        settings.startup_note.setVisible(bool(note))
 
     def save_tray_setting(self) -> None:
         if not self._loading_ui:
@@ -1843,18 +2363,14 @@ class MainWindow(QMainWindow):
         device = self.device_segmented.value()
         self.settings_manager.update(
             {
-                # The old preset menu is gone; its effects live in the toggles.
-                "performance_preset": "balanced",
                 "device": device,
                 "use_gpu_if_available": device != "cpu",
                 "compute_type": str(self.compute_combo.currentData() or "auto"),
                 "cpu_threads": self.cpu_threads_combo.currentData() or "auto",
-                "low_ram_mode": self.low_ram_row.switch.isChecked(),
                 "low_vram_mode": self.low_vram_row.switch.isChecked(),
                 "fallback_to_cpu": self.fallback_cpu_row.switch.isChecked(),
                 "warn_before_large_models": self.warn_large_row.switch.isChecked(),
                 "auto_download_models": self.auto_download_row.switch.isChecked(),
-                "keep_model_loaded": self.keep_model_loaded_row.switch.isChecked(),
             }
         )
         self._reset_transcriber()
@@ -1862,22 +2378,40 @@ class MainWindow(QMainWindow):
         self._schedule_warm_up()
         self.set_status("Ready", "Performance settings saved.")
 
+    def save_unload_setting(self) -> None:
+        """Takes effect without a reload: only when the model is freed changes."""
+        if self._loading_ui:
+            return
+        self.settings_manager.set("unload_model_after", str(self.unload_combo.currentData() or "never"))
+        self._arm_idle_unload()
+        if self.settings_manager.get("unload_model_after") != "each":
+            self._schedule_warm_up()
+        self.set_status("Ready", f"Free memory: {self.unload_combo.currentText().lower()}.")
+
     def show_first_run_setup(self, force: bool = False) -> None:
         if not force and bool(self.settings_manager.get("first_run_setup_completed", False)):
             return
         dialog = FirstRunSetupDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        # Its shortcut box captures like the main window's: the shortcut must not
+        # start a dictation that pastes, and presses Enter, into the box.
+        box = dialog.shortcut_input
+        box.capture_started.connect(lambda: setattr(self, "_is_capturing_shortcut", True))
+        box.shortcut_captured.connect(lambda shortcut: setattr(self, "_is_capturing_shortcut", False))
+        box.capture_cancelled.connect(lambda: setattr(self, "_is_capturing_shortcut", False))
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self._is_capturing_shortcut = False
+        if not accepted:
             if not force:
                 self.settings_manager.set("first_run_setup_completed", True)
             self.set_status("Ready", "Setup skipped. Current settings are unchanged.")
             self.show_tutorial()
             return
         shortcut = dialog.shortcut_input.text().strip() or "Ctrl+Alt+Q"
-        try:
-            parse_shortcut(shortcut)
-        except ValueError as exc:
-            show_message(self, "Shortcut problem", str(exc))
-            return
+        saved = str(self.settings_manager.get("shortcut", "Ctrl+Alt+Q"))
+        if not self._shortcut_accepted(shortcut, saved):
+            shortcut = saved  # the rest of the setup still counts
         device = str(dialog.device_combo.currentData() or "cpu")
         microphone = str(dialog.mic_combo.currentData() or "default")
         values = {
@@ -2044,11 +2578,19 @@ class MainWindow(QMainWindow):
 
     def open_settings_window(self) -> None:
         window = self.settings_window
+        self._show_startup_state()  # Task Manager may have changed it meanwhile
+        window.show_profiles(_copy_profiles(self.settings_manager), self._recent_apps)
+        screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        window.setMaximumHeight(screen.height())  # taller than the screen, it scrolls
         window.adjustSize()
         frame = self.frameGeometry()
+        # Centred on the main window, but never past the screen's edges: it
+        # opened cut off below a short main window.
+        x = frame.center().x() - window.width() // 2
+        y = frame.top() + max(0, (frame.height() - window.height()) // 2)
         window.move(
-            frame.center().x() - window.width() // 2,
-            frame.top() + max(0, (frame.height() - window.height()) // 2),
+            max(screen.left(), min(x, screen.right() + 1 - window.width())),
+            max(screen.top(), min(y, screen.bottom() + 1 - window.height())),
         )
         window.show()
         window.raise_()
@@ -2057,12 +2599,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ status
 
     def update_shortcut_warning(self) -> None:
-        if self._is_capturing_shortcut:
+        text = self.shortcut_input.text().strip() or "Ctrl+Alt+Q"
+        try:
+            parse_shortcut(text)
+        except ValueError:  # still being captured: no parse error under it
             self.shortcut_warning.setText("")
             return
-        self.shortcut_warning.setText(
-            shortcut_warning(self.shortcut_input.text().strip() or "Ctrl+Alt+Q")
-        )
+        self.shortcut_warning.setText("" if self._is_capturing_shortcut else shortcut_warning(text))
 
     def update_level(self, level: float) -> None:
         self.mic_button.set_level(level)
@@ -2106,7 +2649,8 @@ class MainWindow(QMainWindow):
     def show_hotkey_error(self, message: str) -> None:
         self.set_hotkey_status(message)
         self.set_status("Hotkey error", message)
-        show_message(self, "Hotkey error", message)
+        if self.isVisible():  # a dialog from the tray would pop up over a game
+            show_message(self, "Hotkey error", message)
 
     def update_bottom_labels(self) -> None:
         self._refresh_visual_state()
@@ -2130,6 +2674,8 @@ class MainWindow(QMainWindow):
         combo.blockSignals(was_blocked)
 
     def open_from_tray(self) -> None:
+        if QApplication.screenAt(self.frameGeometry().center()) is None:
+            self._fit_to_screen()  # its monitor was unplugged
         self.showNormal()
         self.raise_()
         self.activateWindow()
