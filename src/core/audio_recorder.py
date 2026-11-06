@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -9,6 +10,9 @@ import sounddevice as sd
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
+# MME delivers its first buffer a moment after the stream starts: a tap
+# shorter than this is too short to be speech, not a broken microphone.
+BRIEF_SECONDS = 0.3
 
 
 class AudioRecorderError(RuntimeError):
@@ -35,7 +39,14 @@ class AudioRecorder:
         self._lock = threading.Lock()
         self._level_callback: Callable[[float], None] | None = None
         self._last_status = ""
+        self._started_at = 0.0
+        self._devices_changed = False
         self.is_recording = False
+
+    def mark_devices_changed(self) -> None:
+        """Windows reported a device change (WM_DEVICECHANGE): the next list
+        or start re-reads the devices first."""
+        self._devices_changed = True
 
     def list_input_devices(self, keep: str | None = None) -> list[AudioDevice]:
         """Microphones on the default audio API, each listed once.
@@ -45,11 +56,12 @@ class AudioRecorder:
         lists a saved device that lives on another API.
         """
         devices = [AudioDevice("default", "Default system microphone")]
+        inputs = self._all_inputs()  # re-reads a changed list first
         try:
             default_api = sd.default.hostapi
         except Exception:
             default_api = None
-        for device in self._all_inputs():
+        for device in inputs:
             on_default_api = device.hostapi in (None, default_api)
             if (on_default_api and "sound mapper" not in device.name.lower()) or device.id == keep:
                 devices.append(AudioDevice(device.id, device.name))
@@ -58,10 +70,22 @@ class AudioRecorder:
     def rescan(self) -> None:
         """Re-read the devices. PortAudio keeps the list from startup, so a
         headset connected later never showed up; never done under an open
-        stream, which it would break. About 0.1 s."""
-        if self._stream is None:
+        stream, which it would break. About 0.1 s.
+
+        Never raises: a failed re-read leaves PortAudio down, and the next
+        list or start tries again."""
+        if self._stream is not None:
+            return
+        try:
             sd._terminate()
+        except Exception:
+            pass  # already down: the last re-read failed
+        try:
             sd._initialize()
+        except Exception:
+            self._devices_changed = True
+        else:
+            self._devices_changed = False
 
     def input_device_by_id(self, device_id: str | None) -> AudioDevice | None:
         wanted = str(device_id or "default")
@@ -73,6 +97,8 @@ class AudioRecorder:
         return None
 
     def _all_inputs(self) -> list["_Input"]:
+        if self._devices_changed:
+            self.rescan()
         try:
             raw = sd.query_devices()
         except Exception:
@@ -93,18 +119,22 @@ class AudioRecorder:
         self,
         microphone_device: str = "default",
         level_callback: Callable[[float], None] | None = None,
+        microphone_name: str = "",
     ) -> None:
+        """Record from `microphone_device`. With `microphone_name`, only from
+        the microphone of that name, wherever Windows has moved it."""
         if self.is_recording:
             raise AudioRecorderError("The microphone is already recording.")
+        if self._devices_changed:
+            self.rescan()
+        device_id = str(microphone_device or "default")
+        if device_id != "default" and microphone_name:
+            device_id = self._device_named(device_id, microphone_name)
 
         self._frames = []
         self._last_status = ""
         self._level_callback = level_callback
-        device = (
-            None
-            if microphone_device in ("", "default", None)
-            else int(microphone_device)
-        )
+        device = None if device_id == "default" else int(device_id)
 
         try:
             self._stream = sd.InputStream(
@@ -121,17 +151,32 @@ class AudioRecorder:
                 "Could not start the microphone. Check that a microphone is connected and not blocked by Windows privacy settings."
             ) from exc
 
+        self._started_at = time.monotonic()
         self.is_recording = True
+
+    def _device_named(self, device_id: str, name: str) -> str:
+        """The id the saved microphone has now. Windows renumbers microphones
+        as they come and go, so a saved id can open another one."""
+        device = self.input_device_by_id(device_id)
+        if device is not None and device.name == name:
+            return device_id
+        self.rescan()
+        for device in self.list_input_devices():
+            if device.id != "default" and device.name == name:
+                return device.id
+        raise AudioRecorderError(f"The saved microphone ({name}) is not connected.")
 
     def stop(self) -> np.ndarray:
         """Stop recording and return mono 16 kHz float32 samples in memory.
 
         Audio never touches the disk, so there is no temporary recording to
-        clean up and nothing left behind if the app is killed.
+        clean up and nothing left behind if the app is killed. A quick tap
+        can return no samples at all.
         """
         if not self.is_recording:
             raise AudioRecorderError("The microphone is not recording.")
 
+        lasted = time.monotonic() - self._started_at
         stream = self._stream
         self._stream = None
         self.is_recording = False
@@ -147,12 +192,10 @@ class AudioRecorder:
             frames = [frame.copy() for frame in self._frames]
             self._frames = []
 
-        if not frames:
+        audio = np.concatenate(frames, axis=0).reshape(-1) if frames else np.zeros(0, np.int16)
+        if audio.size == 0 and lasted >= BRIEF_SECONDS:
             raise AudioRecorderError("No microphone audio was captured.")
-
-        audio = np.concatenate(frames, axis=0).reshape(-1)
-        if audio.size == 0:
-            raise AudioRecorderError("No microphone audio was captured.")
+        # A quick tap ends before the first buffer: no samples, and no error.
         return audio.astype(np.float32) / 32768.0
 
     def cancel(self) -> None:
