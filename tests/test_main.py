@@ -37,6 +37,16 @@ def test_the_retype_shortcut_is_checked_the_same_way_and_blank_stays_off() -> No
     assert main.saved_retype_shortcut(FakeSettings(retype_shortcut="Ctrl+Shift+F9")) == "Ctrl+Shift+F9"
 
 
+def test_a_saved_shortcut_that_cannot_work_falls_back_too() -> None:
+    # B18: a saved Ctrl+Alt+Esc cancelled itself on every press, and a mouse
+    # retype shortcut is refused by the listener.
+    settings = FakeSettings(shortcut="Ctrl+Alt+Esc", retype_shortcut="M5")
+
+    assert main.saved_shortcut(settings) == "Ctrl+Alt+Q"
+    assert main.saved_retype_shortcut(settings) == "Ctrl+Alt+V"
+    assert (settings["shortcut"], settings["retype_shortcut"]) == ("Ctrl+Alt+Q", "Ctrl+Alt+V")
+
+
 def test_only_one_copy_runs() -> None:
     # Two copies each recorded and pasted every dictation.
     name = f"WhisperAnywhereTest-{os.getpid()}"

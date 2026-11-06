@@ -20,7 +20,7 @@ from core.app_version import APP_VERSION
 from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
 from core.feedback_player import FeedbackPlayer
-from core.hotkey_listener import HotkeyListener, parse_shortcut
+from core.hotkey_listener import HotkeyListener, parse_shortcut, shortcut_problem
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager
@@ -50,12 +50,16 @@ def another_copy_running(name: str = APP_USER_MODEL_ID) -> bool:
 def saved_shortcut(
     settings_manager: SettingsManager, key: str = "shortcut", default: str = DEFAULT_SHORTCUT
 ) -> str:
-    """The saved shortcut, or the default once it no longer parses: an
-    imported or hand-edited one stopped the app at every sign-in."""
+    """The saved shortcut, or the default once it no longer works: an
+    imported or hand-edited one stopped the app at every sign-in, and one
+    with Esc cancelled itself. The retype shortcut is keyboard only."""
     shortcut = str(settings_manager.get(key, default))
     try:
-        parse_shortcut(shortcut)
+        parsed = parse_shortcut(shortcut)
+        usable = not shortcut_problem(shortcut) and not (key == "retype_shortcut" and parsed.mouse_trigger)
     except ValueError:
+        usable = False
+    if not usable:
         shortcut = default
         settings_manager.set(key, shortcut)
     return shortcut
@@ -130,7 +134,9 @@ def main() -> int:
     shortcut = start_up_step(
         problems, "Shortcut", lambda: saved_shortcut(settings_manager), DEFAULT_SHORTCUT
     )
-    start_up_step(problems, "Retype shortcut", lambda: saved_retype_shortcut(settings_manager))
+    retype_shortcut = start_up_step(
+        problems, "Retype shortcut", lambda: saved_retype_shortcut(settings_manager), ""
+    )
     if settings_manager.get("debug_logs", False):
         app_log.write_to_disk(settings_manager.debug_log_path)
     app_log.log(f"Whisper Anywhere {APP_VERSION} starting")
@@ -174,14 +180,29 @@ def main() -> int:
 
     hotkey.pressed.connect(window.shortcut_pressed)
     hotkey.released.connect(window.stop_listening_and_transcribe)
+    hotkey.tapped.connect(window.drop_tapped_recording)  # a short mouse tap stays a click
+    hotkey.timed_out.connect(window.stop_after_timeout)  # a missed release: keep, never type
     hotkey.cancelled.connect(window.cancel_listening)
+    hotkey.retype_requested.connect(window.retype_last_dictation)
     window.feedback.connect(feedback_player.play)  # cues follow the microphone, not the key
+    window.cue.connect(feedback_player.play_cue)
+    window.escape_hold_changed.connect(hotkey.set_escape_held_back)
+    window.rehook_requested.connect(hotkey.rehook)
     hotkey.status.connect(window.set_hotkey_status)
     hotkey.error.connect(window.show_hotkey_error)
     window.shortcut_changed.connect(hotkey.update_shortcut)
     window.hotkey_enabled_changed.connect(
         lambda enabled: hotkey.start() if enabled else hotkey.stop()
     )
+
+    def update_retype_shortcut(shortcut: str) -> None:
+        try:
+            hotkey.update_retype_shortcut(shortcut)
+        except ValueError as exc:  # the window checks first; this is the last line
+            window.set_status("Shortcut problem", str(exc))
+
+    window.retype_shortcut_changed.connect(update_retype_shortcut)
+    update_retype_shortcut(retype_shortcut or "")
 
     def preview_feedback_volume(volume: float) -> None:
         feedback_player.set_volume(volume)

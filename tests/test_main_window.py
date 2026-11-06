@@ -596,6 +596,27 @@ def test_a_shortcut_still_being_typed_shows_no_parse_error() -> None:
     window.shortcut_warning.setText.assert_called_once_with("")
 
 
+def test_diagnostics_carry_no_user_name(monkeypatch) -> None:
+    # Copy/Save diagnostics said "no personal paths" while including
+    # C:\Users\<name>\... (PL-7, UB-2).
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\Avery")
+    monkeypatch.setenv("USERNAME", "Avery")
+    monkeypatch.setattr(mw.app_log, "recent", lambda count=60: [r"model folder C:\Users\Avery\AppData\Local\x"])
+    window = _window()
+    window.settings_manager.portable_export.return_value = {"model_path": r"C:\Users\Avery\models"}
+    window.settings_manager.get = lambda key, default=None: default
+    window.model_manager.selected_model.return_value = "voz"
+    window.model_manager.is_model_ready.return_value = True
+    window.transcriber.is_loaded.return_value = True
+    window.hotkey_status_label.text.return_value = "Global shortcut ready: M3."
+    window.audio_recorder.input_device_by_id.return_value = SimpleNamespace(name="Avery's AirPods")
+
+    text = mw.MainWindow.diagnostics_text(window)
+
+    assert "Avery" not in text
+    assert "%USERPROFILE%" in text
+
+
 def test_a_hook_error_never_pops_a_dialog_from_the_tray(monkeypatch) -> None:
     # The re-hook watchdog can report errors while a game is in front.
     shown: list[str] = []

@@ -108,7 +108,7 @@ PBT_APMRESUMEAUTOMATIC = 0x0012
 WM_WTSSESSION_CHANGE = 0x02B1
 WTS_SESSION_UNLOCK = 0x8
 NOTIFY_FOR_THIS_SESSION = 0
-ERROR_STATUSES = {"Error", "Hotkey error", "Startup setting problem", "Update check failed"}
+ERROR_STATUSES = {"Error", "Hotkey error", "Start-up problem", "Shortcut problem", "Update check failed"}
 SPEED_LEVELS = {"Fastest": 5, "Very fast": 5, "Fast": 4, "Balanced": 3, "Moderate": 2, "Slow": 1}
 ACCURACY_LEVELS = {
     "Highest": 5,
@@ -127,10 +127,6 @@ MODEL_ROW = 30  # model list row height
 def _version_tuple(value: str) -> tuple[int, ...]:
     parts = re.findall(r"\d+", value)
     return tuple(int(part) for part in parts[:4]) if parts else (0,)
-
-
-def _sanitize_path_text(value: str) -> str:
-    return re.sub(r"[A-Za-z]:\\Users\\[^\\\r\n]+", r"%USERPROFILE%", str(value or ""))
 
 
 def _copy_profiles(settings_manager: SettingsManager) -> dict[str, dict[str, str]]:
@@ -718,6 +714,7 @@ class MainWindow(QMainWindow):
         # shortcut keep the text in Last transcription instead.
         self._deliver = True
         self._undelivered_reason = ""
+        self._transcribing_model = ""
         self._insert_id = 0
         self._active_insert_id = 0
         self._insert_cancel: threading.Event | None = None
@@ -1422,6 +1419,8 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.model_status.setText(f"{info.label} is not downloaded yet.")
+            if self.settings_manager.model_folder_error:  # a drive that is not there
+                self.model_status.setText(self.settings_manager.model_folder_error)
         self._sync_model_list()
         self.update_bottom_labels()
 
@@ -1458,9 +1457,13 @@ class MainWindow(QMainWindow):
 
     def _reset_transcriber(self) -> None:
         self._warm_up_generation += 1
-        guard = self.transcriber.load_guard  # model loads unhook the keyboard and mouse
+        old = self.transcriber
+        guard = old.load_guard  # model loads unhook the keyboard and mouse
         self.transcriber = Transcriber(self.model_manager)
         self.transcriber.load_guard = guard
+        # Dropped here, the old model would be freed on this thread with the
+        # hooks live: an ~80 ms freeze of every click and key on the PC.
+        threading.Thread(target=old.unload, daemon=True).start()
 
     def _schedule_warm_up(self) -> None:
         self._warm_up_timer.start()
@@ -1815,6 +1818,7 @@ class MainWindow(QMainWindow):
                 return
         self._append_activity_log("listening")
         self._set_listening(True)
+        self._idle_unload_timer.stop()
         if from_shortcut and self._mouse_hold_shortcut():
             self._cue_timer.start()  # a tap stays a click and gets no sound
         else:
@@ -1873,13 +1877,14 @@ class MainWindow(QMainWindow):
         self._transcription_request_id += 1
         request_id = self._transcription_request_id
         self._active_transcription_id = request_id
+        self._transcribing_model = self.model_manager.selected_model()  # a pick meanwhile waits
         self._append_activity_log(f"captured {audio.size / SAMPLE_RATE:.1f}s of audio")
         self.set_status("Transcribing", "Turning your speech into text on this PC.")
         settings = self.settings_manager.all()
         self._start_transcription_timer(request_id, audio.size / SAMPLE_RATE)
         threading.Thread(
             target=self._transcribe_worker,
-            args=(request_id, audio, settings, self.transcriber, self.model_manager.selected_model()),
+            args=(request_id, audio, settings, self.transcriber, self._transcribing_model),
             daemon=True,
         ).start()
 
@@ -2110,7 +2115,7 @@ class MainWindow(QMainWindow):
         self._start_insert(self._retype_text, target)
 
     def _show_last_dictation(self, text: str, audio_seconds: float, elapsed: float) -> None:
-        info = self.model_manager.selected_info()
+        info = MODEL_INFO.get(self._transcribing_model) or self.model_manager.selected_info()
         speed = audio_seconds / elapsed if elapsed > 0 else 0.0
         self.last_value.setText(f"{elapsed:.2f} s")
         self.last_condition.setText(
@@ -2124,6 +2129,7 @@ class MainWindow(QMainWindow):
         self._cancel_transcription_timer()
         self._active_transcription_id = 0
         self._is_transcribing = False
+        self._arm_idle_unload()
         self.cue.emit("error")
         self.set_status("Error", message)
         self._target_hwnd = None
@@ -2268,8 +2274,10 @@ class MainWindow(QMainWindow):
         problem = ""
         if shortcut:
             try:
-                parse_shortcut(shortcut)
-                problem = shortcut_problem(shortcut)
+                if parse_shortcut(shortcut).mouse_trigger:
+                    problem = "Use a key combination here: the mouse is only watched for the dictation button."
+                else:
+                    problem = shortcut_problem(shortcut)
             except ValueError as exc:
                 problem = str(exc)
             main = str(self.settings_manager.get("shortcut", ""))
@@ -2479,9 +2487,6 @@ class MainWindow(QMainWindow):
             version.setText(f"Version {APP_VERSION} · up to date")
             self.set_status("Up to date", f"Version {APP_VERSION} is the latest release.")
 
-    def _recent_safe_log_lines(self, max_lines: int = 40) -> list[str]:
-        return [_sanitize_path_text(line) for line in app_log.recent(max_lines)]
-
     def diagnostics_text(self) -> str:
         microphone_id = str(self.settings_manager.get("microphone_device", "default"))
         microphone = self.audio_recorder.input_device_by_id(
@@ -2505,9 +2510,10 @@ class MainWindow(QMainWindow):
                 "id": microphone_id if microphone_id == "default" else "<device-id>",
                 "name": microphone.name if microphone else "Default system microphone",
             },
-            "recent_logs": self._recent_safe_log_lines(),
+            "recent_logs": app_log.recent(40),
         }
-        return json.dumps(payload, indent=2)
+        # The user name hides in paths, device names and log lines alike.
+        return app_log.scrub_user_paths(json.dumps(payload, indent=2))
 
     def copy_diagnostics(self) -> None:
         QApplication.clipboard().setText(self.diagnostics_text())
@@ -2550,6 +2556,12 @@ class MainWindow(QMainWindow):
             values = json.loads(Path(path).read_bytes())  # bytes: a BOM or UTF-16 is fine too
             if isinstance(values, dict) and "shortcut" in values:
                 parse_shortcut(str(values["shortcut"]))  # a bad one stopped every later launch
+                if problem := shortcut_problem(str(values["shortcut"])):
+                    raise ValueError(problem)
+            if isinstance(values, dict) and str(values.get("retype_shortcut") or ""):
+                retype = str(values["retype_shortcut"])
+                if parse_shortcut(retype).mouse_trigger or shortcut_problem(retype):
+                    raise ValueError(f"the retype shortcut {retype} can't be used")
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
             show_message(self, "Settings import failed", f"Could not import settings: {exc}")
@@ -2566,6 +2578,8 @@ class MainWindow(QMainWindow):
         )
         self.model_changed.emit(self.model_manager.selected_model())
         self.feedback_volume_changed.emit(float(self.settings_manager.get("feedback_volume", 0.5)))
+        self.retype_shortcut_changed.emit(str(self.settings_manager.get("retype_shortcut", "") or ""))
+        self._arm_idle_unload()
         self._schedule_warm_up()
         detail = "Settings imported."
         if ignored:
