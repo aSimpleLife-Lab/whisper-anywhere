@@ -122,3 +122,11 @@ def test_openblas_is_held_to_one_thread_before_numpy_loads() -> None:
     )
 
     assert result.stdout.strip() == "['1']", result.stderr[-2000:]
+
+
+def test_a_retype_shortcut_equal_to_the_dictation_shortcut_turns_off() -> None:
+    # One press emitted both: it re-sent the last message instead of recording.
+    settings = FakeSettings(shortcut="Ctrl+Alt+V", retype_shortcut="Ctrl+Alt+V")
+
+    assert main.saved_retype_shortcut(settings) == ""
+    assert settings["retype_shortcut"] == ""

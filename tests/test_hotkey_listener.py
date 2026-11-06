@@ -655,3 +655,10 @@ def test_a_side_button_tap_replays_that_button(clock, send_input) -> None:
     keys._press_token("f9")
     keys._release_token("f9")
     assert key_events == ["pressed", "released"]
+
+
+def test_same_shortcut_compares_the_keys_not_the_spelling() -> None:
+    # A dictation shortcut equal to the retype one fired both on one press.
+    assert hotkey_module.same_shortcut("Ctrl+Alt+V", "alt + ctrl + v")
+    assert not hotkey_module.same_shortcut("Ctrl+Alt+V", "Ctrl+Alt+Q")
+    assert not hotkey_module.same_shortcut("Ctrl+Alt+V", "")

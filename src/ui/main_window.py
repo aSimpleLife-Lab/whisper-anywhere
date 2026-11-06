@@ -46,7 +46,13 @@ from core import app_log, voz_engine
 from core.app_icon import app_icon, apply_native_window_icon
 from core.app_version import APP_VERSION, GITHUB_RELEASES_API, GITHUB_RELEASES_URL
 from core.audio_recorder import SAMPLE_RATE, AudioRecorder, AudioRecorderError
-from core.hotkey_listener import TAP_SECONDS, parse_shortcut, shortcut_problem, shortcut_warning
+from core.hotkey_listener import (
+    TAP_SECONDS,
+    parse_shortcut,
+    same_shortcut,
+    shortcut_problem,
+    shortcut_warning,
+)
 from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager, StartupManagerError
@@ -722,6 +728,8 @@ class MainWindow(QMainWindow):
         self._deliver = True
         self._undelivered_reason = ""
         self._transcribing_model = ""
+        self._start_cue_played = False
+        self._error_cue_pending = False
         self._insert_id = 0
         self._active_insert_id = 0
         self._insert_cancel: threading.Event | None = None
@@ -1759,13 +1767,19 @@ class MainWindow(QMainWindow):
 
     def _set_listening(self, listening: bool) -> None:
         self._is_listening = listening
+        self._start_cue_played = False  # the stop sound only follows a start sound
         self.escape_hold_changed.emit(listening)  # Esc cancels instead of opening a game menu
         if not listening:
             self._cue_timer.stop()
 
     def _play_delayed_start_cue(self) -> None:
+        """TAP_SECONDS after a mouse shortcut went down: it is a hold, not a click."""
         if self._is_listening:
+            self._start_cue_played = True
             self.feedback.emit(True)
+        elif self._error_cue_pending:  # the microphone did not open
+            self._error_cue_pending = False
+            self.cue.emit("error")
 
     def _mouse_hold_shortcut(self) -> bool:
         if str(self.settings_manager.get("shortcut_mode", "hold")) != "hold":
@@ -1780,8 +1794,11 @@ class MainWindow(QMainWindow):
             return
         if not enabled and self._is_listening:
             self.cancel_listening()  # the shortcut that would end it is about to stop
+        if not enabled and self._active_transcription_id and self._deliver:
+            self._deliver = False  # nothing more gets typed: shown, not typed
+            self._undelivered_reason = "paused"
         if not enabled and self._insert_cancel is not None:
-            self._insert_cancel.set()  # and nothing more gets typed
+            self._insert_cancel.set()
         self.hotkey_enabled_changed.emit(enabled)
         self.set_status(
             "Ready" if enabled else "Paused",
@@ -1822,15 +1839,19 @@ class MainWindow(QMainWindow):
                 self.audio_recorder.start(self._resolve_saved_microphone() or "default", self.level_changed.emit)
             except AudioRecorderError as exc:
                 self._append_activity_log("microphone start failed")
-                self.cue.emit("error")
                 self.set_status("Error", _error_text(exc))
+                if from_shortcut and self._mouse_hold_shortcut():
+                    self._error_cue_pending = True  # a tap stays a click: only a hold hears it
+                    self._cue_timer.start()
+                else:
+                    self.cue.emit("error")
                 return
         self._append_activity_log("listening")
         self._set_listening(True)
-        self._idle_unload_timer.stop()
         if from_shortcut and self._mouse_hold_shortcut():
             self._cue_timer.start()  # a tap stays a click and gets no sound
         else:
+            self._start_cue_played = True
             self.feedback.emit(True)
         mode = str(self.settings_manager.get("shortcut_mode", "hold"))
         self.set_status(
@@ -1854,8 +1875,10 @@ class MainWindow(QMainWindow):
     def stop_listening_and_transcribe(self, release_window_hwnd: object = None, deliver: bool = True) -> None:
         if not self._is_listening:
             return
+        start_cue_played = self._start_cue_played
         self._set_listening(False)
-        self.feedback.emit(False)
+        if start_cue_played:  # a hold let go before its start sound gets no stop sound
+            self.feedback.emit(False)
         try:
             release_window = int(release_window_hwnd) if release_window_hwnd is not None else None
         except (TypeError, ValueError):
@@ -1906,6 +1929,8 @@ class MainWindow(QMainWindow):
     def drop_tapped_recording(self) -> None:
         """A short tap of a mouse shortcut stays a normal click: the recording
         it opened goes away without a sound."""
+        self._cue_timer.stop()
+        self._error_cue_pending = False
         if not self._is_listening:
             return
         self._set_listening(False)
@@ -1984,6 +2009,8 @@ class MainWindow(QMainWindow):
                     "The shortcut seemed stuck, so the recording was stopped. The text is in Last "
                     "transcription and was not typed.",
                 )
+            elif self._undelivered_reason == "paused":
+                self.set_status("Paused", "Dictation is off, so the text is in Last transcription and was not typed.")
             else:
                 self.set_status("Ready", "Cancelled. The text is in Last transcription and was not typed.")
             return
@@ -2184,6 +2211,9 @@ class MainWindow(QMainWindow):
             problem = shortcut_problem(shortcut)
         except ValueError as exc:
             problem = str(exc)
+        retype = str(self.settings_manager.get("retype_shortcut", "") or "")
+        if not problem and retype and same_shortcut(shortcut, retype):  # one press would do both
+            problem = f"{retype} types the last dictation again. Pick another shortcut, or change that one in Settings."
         if problem:
             show_message(self, "Shortcut problem", problem)
             return False
@@ -2289,8 +2319,7 @@ class MainWindow(QMainWindow):
                     problem = shortcut_problem(shortcut)
             except ValueError as exc:
                 problem = str(exc)
-            main = str(self.settings_manager.get("shortcut", ""))
-            if not problem and shortcut.replace(" ", "").lower() == main.replace(" ", "").lower():
+            if not problem and same_shortcut(shortcut, str(self.settings_manager.get("shortcut", ""))):
                 problem = "That is already the dictation shortcut."
         if problem:
             show_message(self, "Shortcut problem", problem)
@@ -2569,7 +2598,8 @@ class MainWindow(QMainWindow):
                     raise ValueError(problem)
             if isinstance(values, dict) and str(values.get("retype_shortcut") or ""):
                 retype = str(values["retype_shortcut"])
-                if parse_shortcut(retype).mouse_trigger or shortcut_problem(retype):
+                dictation = str(values.get("shortcut") or self.settings_manager.get("shortcut", ""))
+                if parse_shortcut(retype).mouse_trigger or shortcut_problem(retype) or same_shortcut(retype, dictation):
                     raise ValueError(f"the retype shortcut {retype} can't be used")
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
@@ -2672,7 +2702,7 @@ class MainWindow(QMainWindow):
     def show_hotkey_error(self, message: str) -> None:
         self.set_hotkey_status(message)
         self.set_status("Hotkey error", message)
-        if self.isVisible():  # a dialog from the tray would pop up over a game
+        if self.isActiveWindow():  # only while it is in use: never over a game (minimized counts as visible)
             show_message(self, "Hotkey error", message)
 
     def update_bottom_labels(self) -> None:

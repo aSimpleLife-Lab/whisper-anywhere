@@ -20,7 +20,7 @@ from core.app_version import APP_VERSION
 from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
 from core.feedback_player import FeedbackPlayer
-from core.hotkey_listener import HotkeyListener, parse_shortcut, shortcut_problem
+from core.hotkey_listener import HotkeyListener, parse_shortcut, same_shortcut, shortcut_problem
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager
@@ -66,10 +66,15 @@ def saved_shortcut(
 
 
 def saved_retype_shortcut(settings_manager: SettingsManager) -> str:
-    """The "type the last dictation again" shortcut, checked the same way; blank is off."""
+    """The "type the last dictation again" shortcut, checked the same way; blank is off.
+    One that is also the dictation shortcut turns off: a press would do both."""
     if not str(settings_manager.get("retype_shortcut", DEFAULT_RETYPE_SHORTCUT)):
         return ""
-    return saved_shortcut(settings_manager, "retype_shortcut", DEFAULT_RETYPE_SHORTCUT)
+    retype = saved_shortcut(settings_manager, "retype_shortcut", DEFAULT_RETYPE_SHORTCUT)
+    if same_shortcut(retype, str(settings_manager.get("shortcut", ""))):
+        settings_manager.set("retype_shortcut", "")
+        return ""
+    return retype
 
 
 def start_up_step(problems: list[str], step: str, action: Callable[[], Any], fallback: Any = None) -> Any:

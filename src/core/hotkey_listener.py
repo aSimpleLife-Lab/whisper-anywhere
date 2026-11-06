@@ -254,6 +254,15 @@ class ParsedShortcut:
         return values
 
 
+def same_shortcut(first: str, second: str) -> bool:
+    """Whether two shortcut texts are the same keys, however they are written."""
+    try:
+        one, other = parse_shortcut(first), parse_shortcut(second)
+    except ValueError:
+        return False
+    return (one.modifiers, one.trigger_token) == (other.modifiers, other.trigger_token)
+
+
 def _normalize_trigger_token(part: str) -> str:
     token = TRIGGER_TOKEN_ALIASES.get(part.replace(" ", ""), part.replace(" ", ""))
     if token in KEY_NAME_TO_VK:

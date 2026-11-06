@@ -626,12 +626,146 @@ def test_diagnostics_carry_no_user_name(monkeypatch) -> None:
     assert "%USERPROFILE%" in text
 
 
+class _Timer:
+    def __init__(self) -> None:
+        self.active = False
+
+    def start(self, ms=None) -> None:
+        self.active = True
+
+    def stop(self) -> None:
+        self.active = False
+
+
+class _Sink:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def emit(self, *args) -> None:
+        self.calls.append(args)
+
+
+def _flow_window(**overrides) -> SimpleNamespace:
+    """A window whose own flow methods run for real (MagicMock would stub them)."""
+    window = SimpleNamespace(
+        settings_manager=FakeSettings(unload_model_after="5", shortcut="M3", shortcut_mode="hold"),
+        _idle_unload_timer=_Timer(),
+        _cue_timer=_Timer(),
+        _is_capturing_shortcut=False,
+        _is_listening=False,
+        _is_transcribing=False,
+        _is_preparing_model=False,
+        _start_cue_played=False,
+        _error_cue_pending=False,
+        _target_hwnd=None,
+        _insert_cancel=None,
+        _active_insert_id=0,
+        _active_transcription_id=0,
+        _deliver=True,
+        _undelivered_reason="",
+        _loading_ui=False,
+        model_manager=SimpleNamespace(is_model_ready=lambda name=None: True, selected_model=lambda: "voz"),
+        _selected_microphone_id=lambda: "default",
+        _resolve_saved_microphone=lambda: "default",
+        text_inserter=SimpleNamespace(get_foreground_window=lambda: "discord", get_window_target=lambda hwnd: None),
+        audio_recorder=SimpleNamespace(
+            start=lambda *args, **kwargs: None,
+            cancel=lambda: None,
+            rescan=lambda: None,
+            stop=lambda: mw.np.zeros(1600, dtype=mw.np.float32),
+        ),
+        level_changed=_Sink(),
+        escape_hold_changed=_Sink(),
+        feedback=_Sink(),
+        cue=_Sink(),
+        hotkey_enabled_changed=_Sink(),
+        _append_activity_log=lambda message: None,
+        set_status=lambda status, detail: None,
+        _ready_detail=lambda done=False: "",
+    )
+    for key, value in overrides.items():
+        setattr(window, key, value)
+    for name in ("_set_listening", "_mouse_hold_shortcut", "_arm_idle_unload", "cancel_listening", "_play_delayed_start_cue"):
+        method = getattr(mw.MainWindow, name)
+        setattr(window, name, lambda *args, _method=method, **kwargs: _method(window, *args, **kwargs))
+    return window
+
+
+def test_a_tap_or_an_esc_cancel_keeps_the_idle_unload_countdown() -> None:
+    # Every middle-click stopped the countdown, so the model was never freed.
+    for end in (mw.MainWindow.drop_tapped_recording, mw.MainWindow.cancel_listening):
+        window = _flow_window()
+        window._arm_idle_unload()
+
+        mw.MainWindow.start_listening(window, from_shortcut=True)
+        end(window)
+
+        assert window._idle_unload_timer.active
+
+
+def test_dictation_off_while_it_transcribes_keeps_the_text_untyped() -> None:
+    started: list[str] = []
+    window = _flow_window(_is_transcribing=True, _active_transcription_id=7, _target_hwnd="discord")
+    window._cancel_transcription_timer = lambda: None
+    window._show_last_dictation = lambda *args: None
+    window.last_transcript = SimpleNamespace(setPlainText=lambda text: None)
+    window._remember_for_retype = lambda text: None
+    window.transcriber = SimpleNamespace(runtime_message="")
+    window._start_insert = lambda text, target: started.append(text)
+
+    mw.MainWindow._dictation_toggled(window, False)
+    mw.MainWindow.finish_transcription(window, 7, "hello there", 2.0, 0.3)
+
+    assert started == []
+
+
+def test_a_tap_with_no_microphone_plays_no_error_cue_but_a_hold_does() -> None:
+    def no_microphone(*args, **kwargs) -> None:
+        raise mw.AudioRecorderError("Could not start the microphone.")
+
+    tapped = _flow_window()
+    tapped.audio_recorder.start = no_microphone
+    mw.MainWindow.start_listening(tapped, from_shortcut=True)
+    mw.MainWindow.drop_tapped_recording(tapped)
+    assert tapped.cue.calls == []
+
+    held = _flow_window()
+    held.audio_recorder.start = no_microphone
+    mw.MainWindow.start_listening(held, from_shortcut=True)
+    assert held.cue.calls == []
+    held._play_delayed_start_cue()  # TAP_SECONDS later, still held
+    assert held.cue.calls == [("error",)]
+
+
+def test_a_hold_let_go_before_its_start_sound_plays_no_stop_sound(monkeypatch) -> None:
+    # A 0.3 s middle-click played a lone stop sound.
+    _no_threads(monkeypatch)
+    window = _flow_window()
+
+    mw.MainWindow.start_listening(window, from_shortcut=True)  # the start sound waits TAP_SECONDS
+    mw.MainWindow.stop_listening_and_transcribe(window)
+
+    assert window.feedback.calls == []
+
+
+def test_the_dictation_shortcut_cannot_be_the_retype_shortcut(monkeypatch) -> None:
+    # One press then re-sent the last message instead of recording.
+    shown: list[str] = []
+    monkeypatch.setattr(mw, "show_message", lambda parent, title, text, *args: shown.append(title) or True)
+    window = _window(settings_manager=FakeSettings(retype_shortcut="Ctrl+Alt+V"))
+
+    assert mw.MainWindow._shortcut_accepted(window, "Alt+Ctrl+V", "M3") is False
+    assert shown == ["Shortcut problem"]
+
+
 def test_a_hook_error_never_pops_a_dialog_from_the_tray(monkeypatch) -> None:
-    # The re-hook watchdog can report errors while a game is in front.
+    # The re-hook watchdog can report errors while a game is in front; a
+    # minimized window still counts as visible.
     shown: list[str] = []
     monkeypatch.setattr(mw, "show_message", lambda parent, title, text, *args: shown.append(title))
     window = _window()
-    window.isVisible.return_value = False
+    window.isVisible.return_value = True
+    window.isActiveWindow.return_value = False
 
     mw.MainWindow.show_hotkey_error(window, "Could not restart the global shortcut listener.")
 

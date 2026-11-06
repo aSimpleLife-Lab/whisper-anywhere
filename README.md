@@ -513,6 +513,7 @@ Settings keep one backup of the last good file, `settings.json.bak`. A settings 
 - No command replacements yet, so saying `slash` will transcribe as the word `slash` for now.
 - Typing into elevated Administrator apps requires running Whisper Anywhere as Administrator too; it says so instead of typing.
 - The retype shortcut is a key combination; mouse buttons can only be the dictation shortcut.
+- When **Free memory** has freed the model, the next dictation loads it again (about 2 s). The shortcut hooks step aside while it loads, so in those seconds Esc can't cancel it and the shortcut can't start a new recording.
 - The first model setup can take time and needs internet access.
 - GPU mode needs a compatible CUDA setup; otherwise Auto/GPU Preferred can fall back to CPU.
 
