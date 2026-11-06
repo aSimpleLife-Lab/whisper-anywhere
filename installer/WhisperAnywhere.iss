@@ -37,9 +37,22 @@ Source: "..\dist-lite\Whisper Anywhere\*"; DestDir: "{app}"; Flags: recursesubdi
 Name: "{autoprograms}\Whisper Anywhere"; Filename: "{app}\Whisper Anywhere.exe"
 Name: "{autodesktop}\Whisper Anywhere"; Filename: "{app}\Whisper Anywhere.exe"; Tasks: desktopicon
 
-[Registry]
-; The app adds this when "Start with Windows" is on; take it away on uninstall.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Whisper Anywhere"; ValueType: none; Flags: uninsdeletevalue
-
 [Run]
 Filename: "{app}\Whisper Anywhere.exe"; Description: "Start Whisper Anywhere"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+// The app adds this Run value when "Start with Windows" is on. Every copy
+// (installed, portable, from source) shares the one value, so uninstall takes
+// it away only when it starts this install.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Command: String;
+begin
+  if (CurUninstallStep = usUninstall)
+    and RegQueryStringValue(HKCU, RunKey, 'Whisper Anywhere', Command)
+    and (Pos(Lowercase(ExpandConstant('{app}\')), Lowercase(Command)) > 0) then
+    RegDeleteValue(HKCU, RunKey, 'Whisper Anywhere');
+end;
