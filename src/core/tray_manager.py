@@ -26,6 +26,7 @@ class TrayManager(QObject):
         self.tray = QSystemTrayIcon(self._base_icon, self)
         self.tray.setToolTip("Whisper Anywhere")
         self.model_actions: dict[str, QAction] = {}
+        self._current_model = model_manager.selected_model()
         self._build_menu()
         self.tray.activated.connect(self._on_activated)
 
@@ -37,8 +38,15 @@ class TrayManager(QObject):
         self.tray.hide()
 
     def set_current_model(self, model_name: str) -> None:
+        self._current_model = model_name
         for name, action in self.model_actions.items():
             action.setChecked(name == model_name)
+
+    def _pick_model(self, model_name: str) -> None:
+        # Qt ticks the item as it is clicked; put the tick back, so it moves only when
+        # the window reports the switch and a refused or cancelled pick never stays ticked.
+        self.set_current_model(self._current_model)
+        self.model_selected.emit(model_name)
 
     def set_state(self, state: str) -> None:
         """Badge the tray icon: amber while listening, cyan while working."""
@@ -83,13 +91,12 @@ class TrayManager(QObject):
         menu.addAction(stop_action)
 
         model_menu = menu.addMenu("Current model")
-        selected = self.model_manager.selected_model()
         for info in self.model_manager.models():
             action = QAction(info.label, self)
             action.setCheckable(True)
-            action.setChecked(info.name == selected)
+            action.setChecked(info.name == self._current_model)
             action.triggered.connect(
-                lambda checked=False, name=info.name: self.model_selected.emit(name)
+                lambda checked=False, name=info.name: self._pick_model(name)
             )
             self.model_actions[info.name] = action
             model_menu.addAction(action)

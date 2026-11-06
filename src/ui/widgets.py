@@ -143,6 +143,8 @@ def stylesheet() -> str:
         color: #A3A3A3; font-size: 12px; font-weight: 600; padding: 7px 8px; margin: 1px; }}
     QPushButton#segment:hover {{ background: #1A1A1A; color: #F2F2F2; }}
     QPushButton#segment:checked {{ background: #EA8A2B; border-color: #EA8A2B; color: #140B03; }}
+    QPushButton#segment:focus {{ border-color: #EA8A2B; }}
+    QPushButton#segment:checked:focus {{ border-color: #FFE6CF; }}
 
     QLineEdit, QPlainTextEdit {{ background: #000000; color: #F2F2F2; border: 1px solid #2B2B2B; border-radius: 6px;
         padding: 6px 8px; selection-background-color: #EA8A2B; selection-color: #140B03; }}
@@ -328,9 +330,31 @@ class ToggleRow(QWidget):
         layout.addLayout(text, 1)
         self.switch = Switch()
         layout.addWidget(self.switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._press: QPointF | None = None
+
+    def mousePressEvent(self, event) -> None:
+        # Kept here: passed on, it started ShellDialog's window drag, and the release
+        # Qt fakes when that drag ends flipped the switch.
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press = event.position()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._press is not None and (
+            (event.position() - self._press).manhattanLength() > QGuiApplication.styleHints().startDragDistance()
+        ):
+            self._press = None  # a drag, not a click
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+        pressed, self._press = self._press is not None, None
+        if (
+            pressed
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
             self.switch.toggle()
         super().mouseReleaseEvent(event)
 
