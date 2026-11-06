@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.5.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.5/WhisperAnywhere-Setup-0.2.5.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.6.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.6/WhisperAnywhere-Setup-0.2.6.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
