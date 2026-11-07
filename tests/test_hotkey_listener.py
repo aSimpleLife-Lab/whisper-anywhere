@@ -212,12 +212,44 @@ def test_shortcuts_that_cancel_themselves_or_fire_while_typing_are_refused() -> 
     # cancelled itself. B15: setup could save a bare Enter.
     for shortcut in ("Ctrl+Alt+Esc", "Esc", "Shift+Escape"):
         assert "Esc" in shortcut_problem(shortcut)
-    for shortcut in ("Enter", "Tab", "Backspace", "Space", "Q", "7"):
+    for shortcut in ("Enter", "Backspace", "Space", "Q", "7"):
         assert "while you type" in shortcut_problem(shortcut)
     for shortcut in ("Ctrl+Alt+Q", "M3", "F9", "Ctrl+Enter", "Shift+Q", "Backtick"):
         assert shortcut_problem(shortcut) == ""
     assert shortcut_problem("Ctrl+Q+W")  # can't be read either
     assert shortcut_warning("Ctrl+Alt+Esc") == shortcut_problem("Ctrl+Alt+Esc")  # the warning line too
+
+
+def test_tab_alone_can_dictate_but_not_retype() -> None:
+    # Ben wants Tab to toggle dictation. As that shortcut it is held back from
+    # apps, so it can't fire while typing; retype keys still reach apps.
+    assert shortcut_problem("Tab") == ""
+    assert "no longer reaches apps" in shortcut_warning("Tab")
+    assert "while you type" in shortcut_problem("Tab", retype=True)
+    assert shortcut_problem("Ctrl+Alt+V", retype=True) == ""
+
+
+def test_a_tab_shortcut_is_kept_from_apps_but_alt_tab_still_switches(monkeypatch) -> None:
+    # A Tab that reached the app would move the focus off the text box at
+    # every toggle. Alt+Tab must still switch windows, and never dictate.
+    listener, send = keyboard_hook(monkeypatch, "Tab")
+    listener.update_shortcut("Tab", "toggle")
+    events: list[str] = []
+    listener.pressed.connect(lambda: events.append("pressed"))
+    down, up, sysdown, sysup = 0x0100, 0x0101, 0x0104, 0x0105
+    tab, alt = (0x09, 0x0F), (0xA4, 0x38)
+    assert send(down, *tab) == "withheld"
+    assert send(down, *tab) == "withheld"  # key repeat
+    assert send(up, *tab) == "withheld"
+    assert events == ["pressed"]
+    assert send(sysdown, *alt) == "passed"
+    assert send(sysdown, *tab) == "passed"
+    assert send(sysup, *tab) == "passed"
+    assert send(up, *alt) == "passed"
+    assert events == ["pressed"]
+    assert send(down, *tab) == "withheld" and events == ["pressed", "pressed"]  # the second toggle
+    assert send(up, *tab) == "withheld"
+    listener.stop()
 
 
 def test_ctrl_letter_shortcuts_match() -> None:

@@ -782,6 +782,19 @@ def test_a_shortcut_with_a_problem_is_refused_and_a_risky_one_asks(monkeypatch) 
     assert shown == ["Shortcut problem", "Shortcut warning"]
 
 
+def test_tab_alone_is_refused_as_the_retype_shortcut(monkeypatch) -> None:
+    # Only the dictation shortcut holds a bare Tab back from apps; as the
+    # retype one, every Tab would type the last dictation again.
+    shown: list[str] = []
+    monkeypatch.setattr(mw, "show_message", lambda parent, title, text, *args: shown.append(text))
+    window = _window(settings_manager=FakeSettings(shortcut="M3"))
+
+    mw.MainWindow.save_retype_shortcut(window, "Tab")
+
+    assert len(shown) == 1 and "while you type" in shown[0]
+    assert "retype_shortcut" not in window.settings_manager
+
+
 def test_text_with_no_app_to_type_into_stays_in_last_transcription() -> None:
     # Dictating from the window's own button pasted into the window itself,
     # and Enter clicked its focused button.

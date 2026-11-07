@@ -65,7 +65,8 @@ def saved_shortcut(
     shortcut = str(settings_manager.get(key, default))
     try:
         parsed = parse_shortcut(shortcut)
-        usable = not shortcut_problem(shortcut) and not (key == "retype_shortcut" and parsed.mouse_trigger)
+        retype = key == "retype_shortcut"
+        usable = not shortcut_problem(shortcut, retype) and not (retype and parsed.mouse_trigger)
     except ValueError:
         usable = False
     if not usable:

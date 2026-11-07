@@ -51,6 +51,7 @@ MOUSE_REPLAY = {
 REPLAY_MARKER = 0x57484953
 VK_PACKET = 0xE7  # SendInput Unicode characters arrive with this virtual key
 VK_ESCAPE = 0x1B
+VK_TAB = 0x09
 VK_LCONTROL = 0xA2
 VK_RMENU = 0xA5
 ALTGR_CTRL_SCAN = 0x21D  # the left Ctrl Windows fakes in front of AltGr
@@ -358,16 +359,19 @@ def _replay_click(token: str) -> None:
     SendInput(2, clicks, ctypes.sizeof(INPUT))
 
 
-def shortcut_problem(shortcut_text: str) -> str:
+def shortcut_problem(shortcut_text: str, retype: bool = False) -> str:
     """Why a shortcut can't be saved, or "" when it can. shortcut_warning
-    covers the softer cases, which the window asks about first."""
+    covers the softer cases, which the window asks about first. Tab alone
+    can dictate, as the hook holds it back from apps; the retype shortcut's
+    keys reach apps, so there it would fire while you type."""
     try:
         parsed = parse_shortcut(shortcut_text)
     except ValueError as exc:
         return str(exc)
     if parsed.trigger_token == "esc":
         return "Esc cancels a recording, so a shortcut with Esc would cancel itself. Choose another key."
-    if not parsed.modifiers and parsed.trigger_token in TYPING_KEYS:
+    typing_key = parsed.trigger_token in TYPING_KEYS and (retype or parsed.trigger_token != "tab")
+    if not parsed.modifiers and typing_key:
         return f"{parsed.display} on its own fires while you type. Add Ctrl, Alt, Shift or Win."
     return ""
 
@@ -415,6 +419,8 @@ def shortcut_warning(shortcut_text: str) -> str:
         if parsed.mouse_trigger == "mouse3" and not parsed.modifiers:
             return "Middle-click no longer reaches apps while M3 is the dictation shortcut."
         return ""
+    if parsed.trigger_token == "tab" and not parsed.modifiers:
+        return "Tab no longer reaches apps while it is the dictation shortcut; Alt+Tab, Shift+Tab and Ctrl+Tab still do."
     if not parsed.modifiers and parsed.trigger_vk is not None:
         return "Single-key shortcuts can trigger while typing. Use a modifier if it gets in the way."
     if parsed.trigger_vk is None:
@@ -465,6 +471,7 @@ class HotkeyListener(QObject):
         self._listener: object | None = None
         self._mouse_listener: object | None = None
         self._mouse_held = False
+        self._tab_held = False
         self._altgr_down = False
         self._escape_held_back = False
         self._escape_swallowed = False
@@ -664,7 +671,36 @@ class HotkeyListener(QObject):
             if listener is not None:
                 listener.suppress_event()
             return False
+        if vk == VK_TAB and self._running and self.shortcut.trigger_token == "tab" and not self.shortcut.modifiers:
+            return self._tab_shortcut(down)
         return vk != VK_PACKET and not (vk == VK_RMENU and self._altgr_down)
+
+    def _tab_shortcut(self, down: bool) -> bool:
+        """Tab alone as the shortcut is held back from apps, as a bound mouse
+        button is: a Tab that reached the app would move the focus off the
+        text box at every toggle. Tab with a modifier (Alt+Tab, Shift+Tab) is
+        not the shortcut and reaches apps untouched.
+
+        ponytail: only a bare Tab is held back; other bare keys (F9, Backtick)
+        still reach apps, and a quick tap in hold mode isn't replayed as a
+        Tab the way M3's is. Tab combos skip the shortcut logic, so a retype
+        shortcut with Tab can't fire while Tab dictates."""
+        if down and not self._tab_held:
+            with self._state_lock:
+                self._forget_released_modifiers_locked("tab")
+                if self._pressed_tokens & MODIFIER_VKS.keys():
+                    return False
+            self._tab_held = True
+            self._press_token("tab")
+        elif not down:
+            if not self._tab_held:
+                return False
+            self._tab_held = False
+            self._release_token("tab")
+        listener = self._listener
+        if listener is not None:
+            listener.suppress_event()
+        return False
 
     def _mouse_filter(self, msg: int, data: object) -> bool:
         """Runs inside the low-level mouse hook, so ordinary events cost only a
@@ -726,7 +762,7 @@ class HotkeyListener(QObject):
             self._pressed_tokens.clear()
             self._shortcut_active = False
             self._cancel_watchdog_locked()
-        self._mouse_held = False
+        self._mouse_held = self._tab_held = False
         with self._hooks_lock:
             self._sync_mouse_listener()
         self._log(f"Updated hotkey: shortcut={self.shortcut.display}, mode={self.mode}")

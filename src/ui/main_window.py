@@ -2313,7 +2313,7 @@ class MainWindow(QMainWindow):
                 if parse_shortcut(shortcut).mouse_trigger:
                     problem = "Use a key combination here: the mouse is only watched for the dictation button."
                 else:
-                    problem = shortcut_problem(shortcut)
+                    problem = shortcut_problem(shortcut, retype=True)
             except ValueError as exc:
                 problem = str(exc)
             if not problem and same_shortcut(shortcut, str(self.settings_manager.get("shortcut", ""))):
@@ -2596,7 +2596,8 @@ class MainWindow(QMainWindow):
             if isinstance(values, dict) and str(values.get("retype_shortcut") or ""):
                 retype = str(values["retype_shortcut"])
                 dictation = str(values.get("shortcut") or self.settings_manager.get("shortcut", ""))
-                if parse_shortcut(retype).mouse_trigger or shortcut_problem(retype) or same_shortcut(retype, dictation):
+                unusable = parse_shortcut(retype).mouse_trigger or shortcut_problem(retype, retype=True)
+                if unusable or same_shortcut(retype, dictation):
                     raise ValueError(f"the retype shortcut {retype} can't be used")
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:

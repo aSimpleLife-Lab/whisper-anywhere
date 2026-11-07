@@ -47,6 +47,13 @@ def test_a_saved_shortcut_that_cannot_work_falls_back_too() -> None:
     assert (settings["shortcut"], settings["retype_shortcut"]) == ("Ctrl+Alt+Q", "Ctrl+Alt+V")
 
 
+def test_a_saved_tab_stays_the_dictation_shortcut_but_not_the_retype_one() -> None:
+    settings = FakeSettings(shortcut="Tab", retype_shortcut="Tab")
+
+    assert main.saved_shortcut(settings) == "Tab"
+    assert main.saved_retype_shortcut(settings) == "Ctrl+Alt+V"
+
+
 def test_only_one_copy_runs() -> None:
     # Two copies each recorded and pasted every dictation.
     name = f"WhisperAnywhereTest-{os.getpid()}"
