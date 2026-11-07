@@ -3,15 +3,10 @@ from __future__ import annotations
 import ctypes
 import threading
 import time
-from contextlib import contextmanager
 from ctypes import windll, wintypes
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterator
 
 from PySide6.QtCore import QObject, QTimer, Signal
-
-from core import app_log
 
 try:
     import win32gui
@@ -51,7 +46,9 @@ MOUSE_REPLAY = {
     "mouse4": (0x0080, 0x0100, 1),  # XBUTTON1
     "mouse5": (0x0080, 0x0100, 2),  # XBUTTON2
 }
-REPLAY_MARKER = 0x57484953  # "WHIS" in dwExtraInfo: our own replayed click
+# "WHIS" in dwExtraInfo: input we sent ourselves, a replayed tap or the
+# paste, Enter and typing of TextInserter. The hooks let it pass untouched.
+REPLAY_MARKER = 0x57484953
 VK_PACKET = 0xE7  # SendInput Unicode characters arrive with this virtual key
 VK_ESCAPE = 0x1B
 VK_LCONTROL = 0xA2
@@ -59,17 +56,12 @@ VK_RMENU = 0xA5
 ALTGR_CTRL_SCAN = 0x21D  # the left Ctrl Windows fakes in front of AltGr
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
-LLKHF_INJECTED = 0x10
-# Our last key events reach the hook a moment after SendInput returns.
-INJECTED_GRACE_SECONDS = 0.3
 # Windows' own state of each modifier, which never misses a key-up.
 MODIFIER_VKS = {"ctrl": (0x11,), "shift": (0x10,), "alt": (0x12,), "win": (0x5B, 0x5C)}
 # M1 and M2 are ordinary clicking; bound alone they would block the mouse.
 MOUSE_NEEDS_MODIFIER = {"mouse1", "mouse2"}
 # Bound alone, these fire while typing.
 TYPING_KEYS = {"enter", "tab", "backspace", "space", *"abcdefghijklmnopqrstuvwxyz", *"0123456789"}
-DEFAULT_START_SOUND_PATH = ""
-DEFAULT_STOP_SOUND_PATH = ""
 
 KEY_NAME_TO_VK = {
     "space": 0x20,
@@ -252,6 +244,15 @@ class ParsedShortcut:
         if self.trigger_vk is not None:
             values.add(self.trigger_vk)
         return values
+
+
+def parse_retype_shortcut(shortcut_text: str) -> ParsedShortcut | None:
+    """The retype shortcut, or None when it is off. Keyboard only: the mouse
+    is hooked only for a mouse dictation shortcut."""
+    parsed = parse_shortcut(shortcut_text) if shortcut_text.strip() else None
+    if parsed is not None and parsed.mouse_trigger:
+        raise ValueError("Use a keyboard shortcut to type the last dictation again.")
+    return parsed
 
 
 def same_shortcut(first: str, second: str) -> bool:
@@ -439,6 +440,9 @@ def shortcut_warning(shortcut_text: str) -> str:
 
 
 class HotkeyListener(QObject):
+    """The low-level keyboard and mouse hooks. They run in the hotkey helper
+    process (core.hotkey_helper), which sends these signals on to the app."""
+
     pressed = Signal()
     released = Signal(object)  # the window in front at a real release
     cancelled = Signal()
@@ -447,20 +451,12 @@ class HotkeyListener(QObject):
     retype_requested = Signal()  # the retype shortcut, once per press
     error = Signal(str)
     status = Signal(str)
+    logged = Signal(str)  # a line for the app's log
 
-    def __init__(
-        self,
-        shortcut: str = "Ctrl+Alt+Q",
-        mode: str = "hold",
-        start_sound_path: str | Path | None = DEFAULT_START_SOUND_PATH,
-        stop_sound_path: str | Path | None = DEFAULT_STOP_SOUND_PATH,
-        parent: QObject | None = None,
-    ) -> None:
+    def __init__(self, shortcut: str = "Ctrl+Alt+Q", mode: str = "hold", parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.shortcut = parse_shortcut(shortcut)
         self.mode = mode if mode in ("hold", "toggle") else "hold"
-        self.start_sound_path = Path(start_sound_path) if start_sound_path else None
-        self.stop_sound_path = Path(stop_sound_path) if stop_sound_path else None
         self._required_tokens = self._required_tokens_for(self.shortcut)
         self._retype_tokens: frozenset[str] = frozenset()
         self._pressed_tokens: set[str] = set()
@@ -472,7 +468,6 @@ class HotkeyListener(QObject):
         self._altgr_down = False
         self._escape_held_back = False
         self._escape_swallowed = False
-        self._ignore_injected_until = 0.0
         self._last_input_at = 0.0  # the last event either hook saw
         self._hooked_at = 0.0  # when the hooks were last put in
         self._held_since = 0.0  # when the current hold began
@@ -480,7 +475,6 @@ class HotkeyListener(QObject):
         self._watchdog: threading.Timer | None = None
         self._state_lock = threading.Lock()
         self._hooks_lock = threading.RLock()  # guards the two pynput listeners
-        self._pauses = 0
         self._health = QTimer(self)
         self._health.setInterval(int(HEALTH_CHECK_SECONDS * 1000))
         self._health.timeout.connect(self._check_hooks)
@@ -515,10 +509,10 @@ class HotkeyListener(QObject):
         self.status.emit(f"Global shortcut ready: {self.shortcut.display}.")
 
     def _start_keyboard_hook(self) -> str:
-        """Hook the keyboard unless a model load has the hooks paused. Returns
-        an error message, or "" when there is nothing to report."""
+        """Hook the keyboard. Returns an error message, or "" when there is
+        nothing to report."""
         with self._hooks_lock:
-            if self._pauses or self._listener is not None:
+            if self._listener is not None:
                 return ""
             try:
                 listener = pynput_keyboard.Listener(
@@ -559,16 +553,16 @@ class HotkeyListener(QObject):
             try:
                 hook.stop()
                 if hook.is_alive():
-                    hook.join(timeout=2)  # gone before a model load takes the GIL
+                    hook.join(timeout=2)  # gone before a fresh one goes in
             except Exception as exc:
                 self._log(f"A hook stopped with an error: {exc!r}")
 
     def _hook_again(self) -> None:
-        """Hook again unless a model load has the hooks paused. Releases were
-        missed while unhooked: a held shortcut counts as let go."""
+        """Hook again. Releases were missed while unhooked: a held shortcut
+        counts as let go."""
         error = ""
         with self._hooks_lock:
-            if self._running and not self._pauses:
+            if self._running:
                 error = self._start_keyboard_hook()
                 self._sync_mouse_listener()
         if error:
@@ -587,12 +581,12 @@ class HotkeyListener(QObject):
         after session unlock and resume, the health check when one died."""
         self._unhook()
         self._hook_again()
-        self._log(f"Hooks put in again: running={self._running}, paused={bool(self._pauses)}")
+        self._log(f"Hooks put in again: running={self._running}")
 
     def _check_hooks(self) -> None:
         """Re-hook when a hook died. Runs on a timer, never inside a hook."""
         with self._hooks_lock:
-            if not self._running or self._pauses:
+            if not self._running:
                 return
             hooks = [hook for hook in (self._listener, self._mouse_listener) if hook is not None]
             mouse_hooked = self._mouse_listener is not None
@@ -603,7 +597,7 @@ class HotkeyListener(QObject):
         # the lock screen has the input, and hooking again would not help.
         # ponytail: with only the keyboard hooked, mouse input never reaches
         # us, so a dead keyboard hook is caught only once its thread dies;
-        # hooks in their own process would lift that.
+        # an always-on mouse hook would lift that, at a Python call per move.
         idle = _input_idle_seconds() if mouse_hooked else None
         missed = (
             idle is not None
@@ -614,45 +608,15 @@ class HotkeyListener(QObject):
             self._log(f"Hook check: dead={dead}, missed input={missed}; hooking again")
             self.rehook()
 
-    @contextmanager
-    def paused(self) -> Iterator[None]:
-        """Unhook the keyboard and mouse while a speech model loads.
-
-        Loading holds Python's GIL for seconds (Voz: about 3 s), and Windows
-        holds back every click and key press on the PC while a low-level hook
-        cannot answer, so the whole PC froze. Unhooked, nothing waits on us."""
-        # ponytail: unhooks around model loads only; move the hooks into their
-        # own process if another long GIL hold turns up.
-        with self._hooks_lock:
-            self._pauses += 1
-        try:
-            self._unhook()
-            yield
-        finally:
-            with self._hooks_lock:
-                self._pauses -= 1
-            self._hook_again()
-
     def set_escape_held_back(self, held: bool) -> None:
         """While the window records, Esc still cancels but is withheld from
         apps, so a game's menu doesn't open; otherwise it reaches them."""
         self._escape_held_back = held
 
-    @contextmanager
-    def ignoring_injected(self) -> Iterator[None]:
-        """Ignore injected keys while we paste or type: the paste's Ctrl+V and
-        the Enter after it fired a V or Enter shortcut. Keys other tools inject,
-        such as AutoHotkey, still count the rest of the time."""
-        self._ignore_injected_until = float("inf")
-        try:
-            yield
-        finally:
-            self._ignore_injected_until = time.monotonic() + INJECTED_GRACE_SECONDS
-
     def _sync_mouse_listener(self) -> None:
         """Hook the mouse only while a mouse button is the trigger. Callers
         hold _hooks_lock."""
-        wanted = self._running and not self._pauses and self.shortcut.mouse_trigger is not None
+        wanted = self._running and self.shortcut.mouse_trigger is not None
         if wanted and self._mouse_listener is None and pynput_mouse is not None:
             try:
                 listener = pynput_mouse.Listener(
@@ -679,9 +643,11 @@ class HotkeyListener(QObject):
         """Runs inside the low-level keyboard hook; False keeps an event from
         the shortcut (apps still get it). Layouts with AltGr send that key as a
         fake left Ctrl plus Right Alt, so AltGr+Q ('@' on a German keyboard)
-        read as Ctrl+Alt+Q. Our own Unicode typing arrives as VK_PACKET."""
+        read as Ctrl+Alt+Q. Unicode typing arrives as VK_PACKET. Our own paste
+        and Enter fired a V or Enter shortcut: they carry REPLAY_MARKER. Keys
+        other tools inject, such as AutoHotkey's, still count."""
         self._last_input_at = time.monotonic()  # the hooks are alive
-        if data.flags & LLKHF_INJECTED and self._last_input_at < self._ignore_injected_until:
+        if data.dwExtraInfo == REPLAY_MARKER:
             return False
         vk = data.vkCode
         down = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)
@@ -768,11 +734,8 @@ class HotkeyListener(QObject):
 
     def update_retype_shortcut(self, shortcut: str) -> None:
         """A second shortcut that asks the window to type the last dictation
-        again; "" turns it off. Keyboard only: the mouse is hooked only for a
-        mouse dictation shortcut. Its keys still reach apps, as all keys do."""
-        parsed = parse_shortcut(shortcut) if shortcut.strip() else None
-        if parsed is not None and parsed.mouse_trigger:
-            raise ValueError("Use a keyboard shortcut to type the last dictation again.")
+        again; "" turns it off. Its keys still reach apps, as all keys do."""
+        parsed = parse_retype_shortcut(shortcut)
         with self._state_lock:
             self._retype_tokens = self._required_tokens_for(parsed) if parsed else frozenset()
         self._log(f"Retype shortcut: {parsed.display if parsed else 'off'}")
@@ -942,4 +905,4 @@ class HotkeyListener(QObject):
         return None
 
     def _log(self, message: str) -> None:
-        app_log.log(f"hotkey: {message}")
+        self.logged.emit(f"hotkey: {message}")

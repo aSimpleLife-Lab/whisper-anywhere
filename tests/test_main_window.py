@@ -14,20 +14,6 @@ class FakeSettings(dict):
         self[key] = value
 
 
-def test_a_rebuilt_transcriber_keeps_the_input_freeze_guard() -> None:
-    # Model and Performance changes rebuild the transcriber; the rebuilt one
-    # loaded Voz with the hooks live and froze the PC for ~3 s per dictation.
-    guard = object()
-    old = mw.Transcriber(SimpleNamespace())
-    old.load_guard = guard
-    window = SimpleNamespace(_warm_up_generation=0, transcriber=old, model_manager=old.model_manager)
-
-    mw.MainWindow._reset_transcriber(window)
-
-    assert window.transcriber is not old
-    assert window.transcriber.load_guard is guard
-
-
 def test_toggle_shortcut_starts_or_stops_by_the_windows_own_state() -> None:
     calls: list[str] = []
     window = SimpleNamespace(

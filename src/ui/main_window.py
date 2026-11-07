@@ -1473,11 +1473,8 @@ class MainWindow(QMainWindow):
     def _reset_transcriber(self) -> None:
         self._warm_up_generation += 1
         old = self.transcriber
-        guard = old.load_guard  # model loads unhook the keyboard and mouse
         self.transcriber = Transcriber(self.model_manager)
-        self.transcriber.load_guard = guard
-        # Dropped here, the old model would be freed on this thread with the
-        # hooks live: an ~80 ms freeze of every click and key on the PC.
+        # Off this thread: unload waits for a dictation still using the old model.
         threading.Thread(target=old.unload, daemon=True).start()
 
     def _schedule_warm_up(self) -> None:
@@ -1504,7 +1501,7 @@ class MainWindow(QMainWindow):
 
     def _unload_worker(self, transcriber: Transcriber) -> None:
         try:
-            transcriber.unload()  # pauses the hooks: freeing it holds the GIL ~80 ms
+            transcriber.unload()  # freeing it holds the GIL ~80 ms
         except Exception as exc:
             self._append_activity_log(f"unload failed: {_error_text(exc)}")
         self.unload_done.emit()

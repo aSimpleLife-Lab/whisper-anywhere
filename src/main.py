@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+# ruff: noqa: E402  (the hotkey helper starts before the app's own imports)
 import os
 
 # Before anything imports numpy: its OpenBLAS starts a thread per core and
 # commits their buffers (23 idle threads, 747 MB); the engines use their own.
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
-import multiprocessing
 import sys
+
+from core.hotkey_helper import HELPER_FLAG, HotkeyHelper, run_helper
+
+if HELPER_FLAG in sys.argv[1:]:
+    # This program again, as the shortcut's helper process (core.hotkey_helper):
+    # it needs none of the app below.
+    raise SystemExit(run_helper())
+
+import multiprocessing
 from ctypes import WinDLL, c_wchar_p, get_last_error, windll
 from typing import Any, Callable
 
@@ -20,7 +29,7 @@ from core.app_version import APP_VERSION
 from core.app_icon import app_icon
 from core.audio_recorder import AudioRecorder
 from core.feedback_player import FeedbackPlayer
-from core.hotkey_listener import HotkeyListener, parse_shortcut, same_shortcut, shortcut_problem
+from core.hotkey_listener import parse_shortcut, same_shortcut, shortcut_problem
 from core.model_manager import ModelManager
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager
@@ -174,14 +183,9 @@ def main() -> int:
     if problems:
         window.set_status("Start-up problem", " ".join(problems))
     tray = TrayManager(model_manager)
-    hotkey = HotkeyListener(
-        shortcut,
-        str(settings_manager.get("shortcut_mode", "hold")),
-        start_sound_path=str(settings_manager.get("start_sound_path", "")),
-        stop_sound_path=str(settings_manager.get("stop_sound_path", "")),
-    )
-    transcriber.load_guard = hotkey.paused  # model loads unhook the keyboard and mouse
-    text_inserter.input_guard = hotkey.ignoring_injected  # our own keys are not the shortcut
+    # The keyboard and mouse hooks run in a helper process: a model load
+    # holding this one's GIL for seconds can't hold back the PC's input.
+    hotkey = HotkeyHelper(shortcut, str(settings_manager.get("shortcut_mode", "hold")))
 
     hotkey.pressed.connect(window.shortcut_pressed)
     hotkey.released.connect(window.stop_listening_and_transcribe)

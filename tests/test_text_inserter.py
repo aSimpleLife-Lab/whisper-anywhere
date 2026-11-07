@@ -3,12 +3,12 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
 import core.text_inserter as text_module
+from core.hotkey_listener import REPLAY_MARKER
 from core.text_inserter import InsertionCancelled, TextInsertionError, TextTarget
 
 DELAYED = object()  # CF_UNICODETEXT put on the clipboard to be rendered on request
@@ -623,22 +623,23 @@ def test_an_app_whose_level_windows_will_not_tell_is_still_tried(paste, monkeypa
     assert enter_pressed(paste.log)
 
 
-def test_our_own_key_presses_happen_inside_the_input_guard(paste) -> None:
-    # The paste's Ctrl+V and the Enter after it are injected keys; main.py
-    # points the guard at the shortcut listener, which ignores them meanwhile.
-    @contextmanager
-    def guard():
-        paste.log.append(("guard", "on"))
-        yield
-        paste.log.append(("guard", "off"))
+def test_every_key_we_send_carries_the_marker_the_shortcut_hook_skips(paste) -> None:
+    # The paste's Ctrl+V, the Enter after it and typed text are injected keys
+    # that could fire a V or Enter shortcut. The hooks run in their own
+    # process and can't see when we paste, so each key says it is ours.
+    markers: list[int] = []
+    send = paste.user32.SendInput
 
-    paste.inserter.input_guard = guard
+    def marked(count: int, events, size: int) -> int:
+        markers.extend(events[index].u.ki.dwExtraInfo for index in range(count))
+        return send(count, events, size)
+
+    paste.user32.SendInput = marked
     paste.inserter.insert_text("hello", DISCORD, {"restore_clipboard": False, "send_key": "enter"})
+    paste.inserter.insert_text("gg", DISCORD, {"insert_method": "type", "send_key": "none"})
 
-    marks = [event for event in paste.log if event[0] in ("guard", "down", "up")]
-    assert marks[0] == ("guard", "on")
-    assert marks[-1] == ("guard", "off")
-    assert enter_pressed(paste.log)
+    assert enter_pressed(paste.log) and paste.user32.typed
+    assert markers and set(markers) == {REPLAY_MARKER}
 
 
 def test_input_struct_matches_windows_size() -> None:
