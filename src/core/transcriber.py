@@ -7,17 +7,21 @@ from pathlib import Path
 import re
 import sys
 import threading
-from typing import Any
+from typing import Any, Callable
 import wave
 
 import numpy as np
 
-from core.model_manager import ModelManager
+from core.model_manager import MODEL_INFO, ModelManager
 
 SAMPLE_RATE = 16000
 # Below both of these the clip is microphone hiss, not speech.
 SILENCE_PEAK = 300 / 32768
 SILENCE_MEAN = 25 / 32768
+# huggingface_hub reads these once, when it is imported: Whisper and FunASR
+# file requests give up after 30 s of silence, as Voz's downloads do.
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "30")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
 Audio = np.ndarray | str
 
@@ -36,6 +40,20 @@ def _failure_reason(exc: BaseException) -> str:
 
         return describe_download_error(root)
     return f"({type(root).__name__}: {root}) Check your internet connection, disk space, and model folder permissions."
+
+
+def _local_copy(download: Callable[..., str], repo: str, cache_dir: str, ready: bool) -> str:
+    """The Hugging Face repo's folder in the model folder, downloaded first if need be.
+
+    Called outside the hook pause: a download can take minutes, and a stalled
+    proxy must not leave the shortcut dead. A ready model never asks huggingface.co.
+    """
+    if ready:
+        try:
+            return download(repo, cache_dir=cache_dir, local_files_only=True)
+        except FileNotFoundError:  # huggingface_hub: the cached copy was deleted
+            pass
+    return download(repo, cache_dir=cache_dir)
 
 
 def default_cpu_threads() -> int:
@@ -81,6 +99,9 @@ class Transcriber:
         # main.py points this at the hotkey listener's pause: a model load holds
         # Python's GIL for seconds, and Windows input must not wait on our hooks.
         self.load_guard = nullcontext
+        # Models that loaded once: they load offline even if their marker
+        # file could not be written.
+        self._ready: set[str] = set()
 
     def is_selected_model_ready(self) -> bool:
         return self.model_manager.is_model_ready()
@@ -88,58 +109,68 @@ class Transcriber:
     def is_loaded(self) -> bool:
         return self._model is not None
 
-    def prepare_selected_model(self, settings: dict[str, Any]) -> None:
-        keep_loaded = self._should_keep_model_loaded(settings)
+    def prepare_selected_model(
+        self, settings: dict[str, Any], model_name: str | None = None
+    ) -> None:
+        """Download if need be, then load and warm up: the background warm-up.
+
+        `model_name` pins the model for the whole operation; the selection can
+        change while it runs."""
+        model_name = model_name or self.model_manager.selected_model()
         with self._lock:
             try:
-                self._load_model(settings)
-                self.model_manager.mark_model_ready()
+                self._load_model(settings, model_name, warm_up=True)
             except Exception:
-                self.reset()
+                self.unload()
                 raise
-            else:
-                if not keep_loaded:
-                    self.reset()
+            if settings.get("unload_model_after") == "each":
+                self.unload()
 
-    def transcribe(self, audio: Audio, settings: dict[str, Any]) -> str:
-        """Transcribe 16 kHz mono float32 samples (or a WAV path)."""
+    def transcribe(
+        self, audio: Audio, settings: dict[str, Any], model_name: str | None = None
+    ) -> str:
+        """Transcribe 16 kHz mono float32 samples (or a WAV path) with
+        `model_name`, by default the model selected when the call starts."""
+        model_name = model_name or self.model_manager.selected_model()
         with self._lock:
             if self._looks_like_silence(audio):
                 # The model stays loaded: an accidental tap of the shortcut
                 # should not make the next real dictation reload it.
                 self.runtime_message = (
-                    "No speech was detected above the microphone noise floor."
+                    "The recording was too short."  # a tap that ended before any audio
+                    if isinstance(audio, np.ndarray) and audio.size == 0
+                    else "No speech was detected above the microphone noise floor."
                 )
                 return ""
-            keep_loaded = self._should_keep_model_loaded(settings)
             try:
-                engine = self.model_manager.model_engine(
-                    self.model_manager.selected_model()
-                )
+                engine = self.model_manager.model_engine(model_name)
                 if engine == "voz":
-                    text = self._transcribe_with_voz(audio, settings)
+                    text = self._transcribe_with_voz(audio, settings, model_name)
                 elif engine == "funasr":
-                    text = self._transcribe_with_funasr(audio, settings)
+                    text = self._transcribe_with_funasr(audio, settings, model_name)
                 else:
-                    text = self._transcribe_with_whisper(audio, settings)
-                self.model_manager.mark_model_ready()
+                    text = self._transcribe_with_whisper(audio, settings, model_name)
                 return " ".join(text.split())
             except Exception:
-                self.reset()
+                self.unload()
                 raise
             finally:
-                if not keep_loaded:
-                    self.reset()
+                # Idle minutes are counted by the window's timer, which calls unload().
+                if settings.get("unload_model_after") == "each":
+                    self.unload()
 
-    def reset(self) -> None:
+    def unload(self) -> None:
+        """Free the model. Waits for a running transcription instead of
+        pulling the model from under it."""
         with self._lock:
-            self._model = None
-            self._loaded_key = None
-
-    def _should_keep_model_loaded(self, settings: dict[str, Any]) -> bool:
-        return bool(settings.get("keep_model_loaded", True)) and not bool(
-            settings.get("low_ram_mode", False)
-        )
+            if self._model is None:
+                return
+            # Freeing a model holds the GIL (Voz: 70-99 ms), and Windows holds
+            # back every click and key press while a hook cannot answer: the
+            # hooks step aside, as for a load.
+            with self.load_guard():
+                self._model = None
+                self._loaded_key = None
 
     def _looks_like_silence(self, audio: Audio) -> bool:
         if isinstance(audio, np.ndarray):
@@ -158,8 +189,10 @@ class Transcriber:
             magnitude.mean()
         ) < SILENCE_MEAN
 
-    def _transcribe_with_voz(self, audio: Audio, settings: dict[str, Any]) -> str:
-        model = self._load_model(settings)
+    def _transcribe_with_voz(
+        self, audio: Audio, settings: dict[str, Any], model_name: str
+    ) -> str:
+        model = self._load_model(settings, model_name)
         if bool(settings.get("translate_to_english", False)):
             self._append_runtime_message(
                 "Voz transcribes speech but does not translate it to English."
@@ -174,7 +207,7 @@ class Transcriber:
                 "Voz transcription failed. Check your microphone audio or try another speech model."
             ) from exc
 
-    def _load_voz_model(self, settings: dict[str, Any]):
+    def _load_voz_model(self, settings: dict[str, Any], warm_up: bool):
         from core import voz_engine
 
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
@@ -198,8 +231,13 @@ class Transcriber:
             ) from exc
         try:
             with self.load_guard():
+                # The old sessions go first, inside the pause: freeing them holds
+                # the GIL, and their mapped cache files would block a rebuild.
+                self._model = None
+                self._loaded_key = None
                 model = voz_engine.VozModel(model_path, cpu_threads=threads)
-            model.warm_up()
+            if warm_up:  # a dictation's own clip warms it up
+                model.warm_up()
         except Exception as exc:
             raise TranscriptionError(
                 f"Voz could not be loaded ({type(exc).__name__}: {exc}). Check disk space and the model folder."
@@ -208,8 +246,10 @@ class Transcriber:
         self._loaded_key = key
         return model
 
-    def _transcribe_with_whisper(self, audio: Audio, settings: dict[str, Any]) -> str:
-        model = self._load_model(settings)
+    def _transcribe_with_whisper(
+        self, audio: Audio, settings: dict[str, Any], model_name: str
+    ) -> str:
+        model = self._load_model(settings, model_name)
         kwargs: dict[str, Any] = {
             "beam_size": 5,
             "vad_filter": False,
@@ -230,7 +270,7 @@ class Transcriber:
         except Exception as exc:
             if self._should_retry_on_cpu(settings):
                 try:
-                    fallback_model = self._load_cpu_fallback_model(settings)
+                    fallback_model = self._load_cpu_fallback_model(settings, model_name)
                     segments, _info = fallback_model.transcribe(audio, **kwargs)
                     return " ".join(
                         segment.text.strip() for segment in segments
@@ -243,9 +283,11 @@ class Transcriber:
                 "Transcription failed. Try a smaller model, check your microphone audio, or switch to CPU mode."
             ) from exc
 
-    def _transcribe_with_funasr(self, audio: Audio, settings: dict[str, Any]) -> str:
-        model = self._load_model(settings)
-        kwargs = self._funasr_generate_kwargs(audio, settings)
+    def _transcribe_with_funasr(
+        self, audio: Audio, settings: dict[str, Any], model_name: str
+    ) -> str:
+        model = self._load_model(settings, model_name)
+        kwargs = self._funasr_generate_kwargs(audio, settings, model_name)
         if bool(settings.get("translate_to_english", False)):
             self._append_runtime_message(
                 "FunASR transcribes speech but does not translate it to English."
@@ -256,7 +298,9 @@ class Transcriber:
         except Exception as exc:
             if self._should_retry_funasr_on_cpu(settings):
                 try:
-                    fallback_model = self._load_funasr_cpu_fallback_model(settings)
+                    fallback_model = self._load_funasr_cpu_fallback_model(
+                        settings, model_name
+                    )
                     result = fallback_model.generate(**kwargs)
                     return self._extract_funasr_text(result)
                 except Exception as fallback_exc:
@@ -267,19 +311,39 @@ class Transcriber:
                 "FunASR transcription failed. Try CPU mode, check your microphone audio, or use a smaller speech model."
             ) from exc
 
-    def _load_model(self, settings: dict[str, Any]):
+    def _load_model(
+        self, settings: dict[str, Any], model_name: str, warm_up: bool = False
+    ):
         self.runtime_message = ""  # a silent tap's "No speech" is not this dictation's
-        model_name = self.model_manager.selected_model()
         engine = self.model_manager.model_engine(model_name)
-        if engine == "voz":
-            return self._load_voz_model(settings)
+        if engine == "voz":  # checked by its files, never by the marker
+            return self._load_voz_model(settings, warm_up)
         if engine == "funasr":
-            return self._load_funasr_model(settings, model_name)
-        return self._load_whisper_model(settings, model_name)
+            model = self._load_funasr_model(settings, model_name)
+        else:
+            model = self._load_whisper_model(settings, model_name)
+        self._mark_ready(model_name)
+        return model
+
+    def _is_ready(self, model_name: str) -> bool:
+        return model_name in self._ready or self.model_manager.is_model_ready(model_name)
+
+    def _mark_ready(self, model_name: str) -> None:
+        """After a model's first load: later loads, and the next start, skip
+        huggingface.co. A marker that cannot be written never costs a dictation."""
+        if model_name in self._ready:
+            return
+        self._ready.add(model_name)
+        try:
+            if not self.model_manager.is_model_ready(model_name):
+                self.model_manager.mark_model_ready(model_name)
+        except OSError:
+            pass
 
     def _load_whisper_model(self, settings: dict[str, Any], model_name: str):
         try:
             from faster_whisper import WhisperModel
+            from faster_whisper.utils import download_model
         except Exception as exc:
             raise TranscriptionError(
                 "The local Whisper engine is not installed. Reinstall Whisper Anywhere or rebuild the app with dependencies included."
@@ -301,10 +365,17 @@ class Transcriber:
         if self._model is not None and self._loaded_key == key:
             return self._model
 
+        ready = self._is_ready(model_name)
+        if not ready:
+            self._enable_system_certificate_store()  # as Voz and FunASR do: filtered networks
         try:
-            self._model = self._create_model(
-                WhisperModel, backend_name, model_path, runtime
-            )
+            model_dir = _local_copy(download_model, backend_name, model_path, ready)
+        except Exception as exc:
+            raise TranscriptionError(
+                f"The selected Whisper model could not be downloaded. {_failure_reason(exc)}"
+            ) from exc
+        try:
+            self._model = self._create_model(WhisperModel, model_dir, runtime)
             self._loaded_key = key
             return self._model
         except Exception as exc:
@@ -325,7 +396,7 @@ class Transcriber:
                 )
                 try:
                     self._model = self._create_model(
-                        WhisperModel, backend_name, model_path, fallback_runtime
+                        WhisperModel, model_dir, fallback_runtime
                     )
                     self._loaded_key = fallback_key
                     self.runtime_message = "GPU loading failed, so Whisper Anywhere continued on CPU with safe int8 precision."
@@ -355,8 +426,7 @@ class Transcriber:
             ) from exc
 
         self.runtime_message = ""
-        self._configure_funasr_cache(settings)
-        info = self.model_manager.selected_info()
+        info = MODEL_INFO[model_name]
         runtime = self._resolve_funasr_runtime_options(settings)
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
         key = (
@@ -372,7 +442,13 @@ class Transcriber:
             return self._model
 
         try:
-            self._model = self._create_funasr_model(AutoModel, info, runtime)
+            files = self._funasr_files(info, model_name, settings)
+        except Exception as exc:
+            raise TranscriptionError(
+                f"The selected FunASR model could not be downloaded. {_failure_reason(exc)}"
+            ) from exc
+        try:
+            self._model = self._create_funasr_model(AutoModel, info, runtime, files)
             self._loaded_key = key
             return self._model
         except Exception as exc:
@@ -393,7 +469,7 @@ class Transcriber:
                 )
                 try:
                     self._model = self._create_funasr_model(
-                        AutoModel, info, fallback_runtime
+                        AutoModel, info, fallback_runtime, files
                     )
                     self._loaded_key = fallback_key
                     self.runtime_message = (
@@ -416,38 +492,53 @@ class Transcriber:
     def _create_model(
         self,
         whisper_model_class: Any,
-        backend_name: str,
-        model_path: str,
+        model_dir: str,
         runtime: RuntimeOptions,
     ):
         kwargs: dict[str, Any] = {
             "device": runtime.device,
             "compute_type": runtime.compute_type,
-            "download_root": model_path,
-            # A model that loaded before is on disk. Asking huggingface.co on
-            # every load sent each dictation off the PC, with no timeout.
-            "local_files_only": self.model_manager.is_model_ready(),
+            "local_files_only": True,  # a local folder: nothing to fetch with the hooks off
         }
         if runtime.device == "cpu":
             # faster-whisper's own default is 4 threads, a fraction of most CPUs.
             kwargs["cpu_threads"] = runtime.cpu_threads or default_cpu_threads()
         with self.load_guard():
-            try:
-                return whisper_model_class(backend_name, **kwargs)
-            except FileNotFoundError:  # huggingface_hub: the cached copy was deleted
-                if not kwargs["local_files_only"]:
-                    raise
-                kwargs["local_files_only"] = False
-                return whisper_model_class(backend_name, **kwargs)
+            return whisper_model_class(model_dir, **kwargs)
+
+    def _funasr_files(
+        self, info: Any, model_name: str, settings: dict[str, Any]
+    ) -> dict[str, str]:
+        """Local folders for the model and its VAD and punctuation helpers.
+
+        Left to itself, funasr fetches them inside the hook pause, with no
+        timeout, into the profile's Hugging Face cache.
+        """
+        from funasr.download.name_maps_from_hub import name_maps_hf
+        from huggingface_hub import snapshot_download
+
+        cache_dir = self._configure_funasr_cache(settings)
+        ready = self._is_ready(model_name)
+        repos = {
+            "model": info.backend_name,
+            "vad_model": info.vad_model,
+            "punc_model": info.punc_model,
+        }
+        return {
+            key: _local_copy(snapshot_download, name_maps_hf.get(repo, repo), cache_dir, ready)
+            for key, repo in repos.items()
+            if repo
+        }
 
     def _create_funasr_model(
         self,
         automodel_class: Any,
         info: Any,
         runtime: RuntimeOptions,
+        files: dict[str, str],
     ):
         kwargs: dict[str, Any] = {
-            "model": info.backend_name,
+            "model": files["model"],
             "device": "cuda:0" if runtime.device == "cuda" else "cpu",
             "disable_update": True,
             "disable_pbar": True,
@@ -460,11 +551,11 @@ class Transcriber:
         if info.trust_remote_code:
             kwargs["trust_remote_code"] = True
         if info.vad_model:
-            kwargs["vad_model"] = info.vad_model
+            kwargs["vad_model"] = files["vad_model"]
             kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
         if info.punc_model:
-            kwargs["punc_model"] = info.punc_model
-        with self.load_guard():
+            kwargs["punc_model"] = files["punc_model"]
+        with self.load_guard():  # local folders: nothing to fetch with the hooks off
             return automodel_class(**kwargs)
 
     def _should_retry_on_cpu(self, settings: dict[str, Any]) -> bool:
@@ -485,11 +576,11 @@ class Transcriber:
             and self._loaded_key[3] == "cuda"
         )
 
-    def _load_cpu_fallback_model(self, settings: dict[str, Any]):
+    def _load_cpu_fallback_model(self, settings: dict[str, Any], model_name: str):
         from faster_whisper import WhisperModel
+        from faster_whisper.utils import download_model
 
         self._gpu_failed = True
-        model_name = self.model_manager.selected_model()
         backend_name = self.model_manager.backend_model_name(model_name)
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
         fallback_runtime = RuntimeOptions(
@@ -505,20 +596,19 @@ class Transcriber:
             fallback_runtime.compute_type,
             fallback_runtime.cpu_threads,
         )
-        self._model = self._create_model(
-            WhisperModel, backend_name, model_path, fallback_runtime
-        )
+        # It just loaded on the GPU, so it is on disk.
+        model_dir = _local_copy(download_model, backend_name, model_path, True)
+        self._model = self._create_model(WhisperModel, model_dir, fallback_runtime)
         self._loaded_key = fallback_key
         self.runtime_message = "GPU transcription failed, so Whisper Anywhere continued on CPU with safe int8 precision."
         return self._model
 
-    def _load_funasr_cpu_fallback_model(self, settings: dict[str, Any]):
+    def _load_funasr_cpu_fallback_model(self, settings: dict[str, Any], model_name: str):
         self._enable_system_certificate_store()
         from funasr import AutoModel
 
         self._gpu_failed = True
-        self._configure_funasr_cache(settings)
-        info = self.model_manager.selected_info()
+        info = MODEL_INFO[model_name]
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
         fallback_runtime = RuntimeOptions(
             device="cpu",
@@ -533,7 +623,8 @@ class Transcriber:
             fallback_runtime.compute_type,
             fallback_runtime.cpu_threads,
         )
-        self._model = self._create_funasr_model(AutoModel, info, fallback_runtime)
+        files = self._funasr_files(info, model_name, settings)
+        self._model = self._create_funasr_model(AutoModel, info, fallback_runtime, files)
         self._loaded_key = fallback_key
         self.runtime_message = "GPU transcription failed, so FunASR continued on CPU."
         return self._model
@@ -562,7 +653,7 @@ class Transcriber:
     def _resolve_funasr_device(
         self, settings: dict[str, Any], messages: list[str]
     ) -> str:
-        if self._gpu_failed or bool(settings.get("low_ram_mode", False)):
+        if self._gpu_failed:
             return "cpu"
 
         requested = str(settings.get("device", "auto"))
@@ -595,7 +686,7 @@ class Transcriber:
 
     def _resolve_device(self, settings: dict[str, Any], messages: list[str]) -> str:
         # The v0.1 preset menu is gone, so its saved value no longer counts.
-        if self._gpu_failed or bool(settings.get("low_ram_mode", False)):
+        if self._gpu_failed:
             return "cpu"
 
         requested = str(settings.get("device", "auto"))
@@ -668,14 +759,12 @@ class Transcriber:
         except (TypeError, ValueError):
             return None
 
-    def _configure_funasr_cache(self, settings: dict[str, Any]) -> None:
+    def _configure_funasr_cache(self, settings: dict[str, Any]) -> str:
+        """FunASR's Hugging Face cache, in the model folder. Passed to each
+        download: HF_HOME came too late, as importing funasr fixes the cache."""
         cache_root = Path(str(settings.get("model_path"))).expanduser() / "funasr"
-        try:
-            cache_root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return
         os.environ.setdefault("MODELSCOPE_CACHE", str(cache_root / "modelscope"))
-        os.environ.setdefault("HF_HOME", str(cache_root / "huggingface"))
+        return str(cache_root / "huggingface" / "hub")
 
     def _enable_system_certificate_store(self) -> None:
         try:
@@ -686,10 +775,9 @@ class Transcriber:
             pass
 
     def _funasr_generate_kwargs(
-        self, audio: Audio, settings: dict[str, Any]
+        self, audio: Audio, settings: dict[str, Any], model_name: str
     ) -> dict[str, Any]:
         # Samples stay in memory: FunASR reads arrays as well as files.
-        model_name = self.model_manager.selected_model()
         input_value: Audio | list[Audio] = [audio] if model_name == "funasr-nano" else audio
         kwargs: dict[str, Any] = {
             "input": input_value,
@@ -756,12 +844,10 @@ class Transcriber:
         return " ".join(parts).strip()
 
     def _postprocess_funasr_text(self, text: str) -> str:
-        try:
-            from funasr.utils.postprocess_utils import rich_transcription_postprocess
-
-            return str(rich_transcription_postprocess(text)).strip()
-        except Exception:
-            return re.sub(r"<\|[^|]+?\|>", "", text).strip()
+        # Not funasr's rich_transcription_postprocess: it turns SenseVoice's
+        # event and emotion tags into emoji, "❓" for noise, and drops "The.".
+        text = re.sub(r"<\|[^|]+?\|>", "", text).strip()
+        return text if any(char.isalnum() for char in text) else ""
 
     def _append_runtime_message(self, message: str) -> None:
         if not message:

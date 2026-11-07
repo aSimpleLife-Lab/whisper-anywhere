@@ -12,11 +12,19 @@ from core.app_icon import resource_path
 # always sounded well after the shortcut was pressed.
 BUNDLED_START_SOUND_PATH = Path("assets") / "sounds" / "start.wav"
 BUNDLED_STOP_SOUND_PATH = Path("assets") / "sounds" / "stop.wav"
+BUNDLED_CANCEL_SOUND_PATH = Path("assets") / "sounds" / "cancel.wav"
+BUNDLED_ERROR_SOUND_PATH = Path("assets") / "sounds" / "error.wav"
 DEFAULT_FEEDBACK_VOLUME = 0.5  # until the Sound effects slider moves
+FALLBACK_BEEPS = {  # when a cue file is missing
+    "start": winsound.MB_ICONASTERISK,
+    "stop": winsound.MB_ICONEXCLAMATION,
+    "cancel": winsound.MB_ICONEXCLAMATION,
+    "error": winsound.MB_ICONHAND,
+}
 
 
 class FeedbackPlayer(QObject):
-    """Start/stop cues, preloaded so they play the moment the shortcut moves.
+    """Start, stop, cancel and error cues, preloaded so they play without delay.
 
     WAV cues go through QSoundEffect, which keeps decoded PCM ready for
     low-latency playback. Custom cues in other formats fall back to a media
@@ -33,8 +41,10 @@ class FeedbackPlayer(QObject):
         super().__init__(parent)
         self._volume = max(0.0, min(1.0, volume))
         self._cues = {
-            True: self._load(start_sound_path, BUNDLED_START_SOUND_PATH),
-            False: self._load(stop_sound_path, BUNDLED_STOP_SOUND_PATH),
+            "start": self._load(start_sound_path, BUNDLED_START_SOUND_PATH),
+            "stop": self._load(stop_sound_path, BUNDLED_STOP_SOUND_PATH),
+            "cancel": self._load(None, BUNDLED_CANCEL_SOUND_PATH),
+            "error": self._load(None, BUNDLED_ERROR_SOUND_PATH),
         }
 
     def _load(self, configured_path: str | Path | None, bundled_path: Path):
@@ -65,9 +75,14 @@ class FeedbackPlayer(QObject):
 
     @Slot(bool)
     def play(self, active: bool) -> None:
+        self.play_cue("start" if active else "stop")
+
+    @Slot(str)
+    def play_cue(self, kind: str) -> None:
+        """Play the "start", "stop", "cancel" or "error" cue."""
         if self._volume <= 0:
             return  # slider at 0: silent, and no fallback beep either
-        cue = self._cues.get(active)
+        cue = self._cues.get(kind)
         if isinstance(cue, QSoundEffect):
             cue.stop()
             cue.play()
@@ -76,6 +91,5 @@ class FeedbackPlayer(QObject):
             cue.setPosition(0)
             cue.play()
             return
-        winsound.MessageBeep(
-            winsound.MB_ICONASTERISK if active else winsound.MB_ICONEXCLAMATION
-        )
+        if kind in FALLBACK_BEEPS:
+            winsound.MessageBeep(FALLBACK_BEEPS[kind])

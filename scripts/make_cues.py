@@ -1,10 +1,11 @@
-"""Synthesize the start/stop cues in assets/sounds: layered voxel blips.
+"""Synthesize the cues in assets/sounds: layered voxel blips.
 
 The core is a staircase on a 4-bit stepped triangle (16 levels, like the NES
 triangle channel) plus a block "thock": start lands the block and steps up
 C5-G5-C6, stop steps down and lands it. Around that: a fast chord arpeggio an
 octave up on a soft pulse voice, a game-style stereo echo, a bend into the first
-note, vibrato on the last, and a snap click on the thock. Peaks near -19 dBFS.
+note, vibrato on the last, and a snap click on the thock. Cancel steps down a
+minor third and never lands; error is a low double tone. Peaks near -19 dBFS.
 Run: python scripts/make_cues.py
 """
 
@@ -20,6 +21,7 @@ SR = 48000
 PEAK = 0.11  # about -19 dBFS; the app plays cues at half volume on top of this
 SOUNDS = Path(__file__).resolve().parents[1] / "assets" / "sounds"
 C5, G5, C6 = 523.25, 783.99, 1046.5
+A3, EB5 = 220.0, 622.25
 STEP = 0.055  # seconds between staircase notes
 
 
@@ -83,6 +85,22 @@ def delayed(x: np.ndarray, seconds: float) -> np.ndarray:
     return np.concatenate([np.zeros(lag), x[:-lag]])
 
 
+def stereo_echo(lead: np.ndarray, sparkle: np.ndarray) -> np.ndarray:
+    """Lead in the middle, sparkle a little left, and the echo bouncing right then left."""
+    tones = pan(0.55 * lead, 0.0) + pan(0.16 * sparkle, -0.35)
+    mono = 0.55 * lead + 0.16 * sparkle
+    tones += pan(0.32 * delayed(mono, 0.075), 0.5) + pan(0.12 * delayed(mono, 0.15), -0.5)
+    return tones
+
+
+def finish(mix: np.ndarray, peak: float = PEAK) -> np.ndarray:
+    """Soften the top, fade the tail and set the peak level."""
+    mix = np.stack([lowpass(side, 9000) for side in mix])
+    fade = int(0.03 * SR)
+    mix[:, -fade:] *= np.linspace(1, 0, fade)
+    return mix * peak / np.max(np.abs(mix))
+
+
 def cue(rising: bool, seconds: float, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     n = int(seconds * SR)
@@ -100,11 +118,7 @@ def cue(rising: bool, seconds: float, seed: int) -> np.ndarray:
             add_note(sparkle, at + j * 0.014, freq, pulse, 0.02)
     sparkle = lowpass(sparkle, 5000)
 
-    tones = pan(0.55 * lead, 0.0) + pan(0.16 * sparkle, -0.35)
-    mono = 0.55 * lead + 0.16 * sparkle
-    tones += pan(0.32 * delayed(mono, 0.075), 0.5) + pan(0.12 * delayed(mono, 0.15), -0.5)
-
-    mix = tones.copy()
+    mix = stereo_echo(lead, sparkle)
     land = 0.0 if rising else first + len(steps) * STEP - 0.005
     block = thock(int(0.16 * SR), rng, snap=True)
     at = int(land * SR)
@@ -113,11 +127,32 @@ def cue(rising: bool, seconds: float, seed: int) -> np.ndarray:
         bounce = thock(int(0.12 * SR), rng, snap=False)
         at += int(0.045 * SR)
         mix[:, at : at + len(bounce)] += 0.3 * bounce[: n - at]
+    return finish(mix)
 
-    mix = np.stack([lowpass(side, 9000) for side in mix])
-    fade = int(0.03 * SR)
-    mix[:, -fade:] *= np.linspace(1, 0, fade)
-    return mix * PEAK / np.max(np.abs(mix))
+
+def cancel_cue(seconds: float) -> np.ndarray:
+    """Two steps down a minor third with a falling minor chord, and no block lands."""
+    n = int(seconds * SR)
+    lead = np.zeros(n)
+    sparkle = np.zeros(n)
+    for k, root in enumerate((EB5, C5)):
+        add_note(lead, k * STEP, root, tri16, 0.07 if k else 0.05, bend=k == 0)
+        for j, freq in enumerate((3 * root, 2.4 * root, 2 * root)):
+            add_note(sparkle, k * STEP + j * 0.014, freq, pulse, 0.02)
+    # No thock click sets the peak here, so the tones do: at half of it the cue is
+    # as loud as start and stop (A-weighted).
+    return finish(stereo_echo(lead, lowpass(sparkle, 5000)), PEAK * 0.5)
+
+
+def error_cue(seconds: float) -> np.ndarray:
+    """A low double buzz on the pulse voice, well under the staircase: clearly not start or stop."""
+    n = int(seconds * SR)
+    buzz = np.zeros(n)
+    body = np.zeros(n)
+    for at in (0.0, 0.15):
+        add_note(buzz, at, A3, pulse, 0.05)
+        add_note(body, at, A3, tri16, 0.06)
+    return finish(stereo_echo(lowpass(buzz, 2000), body), PEAK * 0.9)  # as loud as start and stop (A-weighted)
 
 
 def write(name: str, stereo: np.ndarray) -> None:
@@ -132,3 +167,5 @@ def write(name: str, stereo: np.ndarray) -> None:
 if __name__ == "__main__":
     write("start.wav", cue(rising=True, seconds=0.42, seed=3))
     write("stop.wav", cue(rising=False, seconds=0.46, seed=5))
+    write("cancel.wav", cancel_cue(seconds=0.32))
+    write("error.wav", error_cue(seconds=0.42))

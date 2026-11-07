@@ -36,3 +36,8 @@ def test_tutorial_shows_once_and_replays_from_the_button(monkeypatch) -> None:
 
 def test_the_first_step_names_the_users_own_shortcut() -> None:
     assert "Hold M5" in mw._tutorial_pages("M5")[0][1]
+
+
+def test_the_typing_step_names_the_users_retype_shortcut_or_none() -> None:
+    assert "Ctrl+Shift+F9 types it again" in mw._tutorial_pages("M3", "Ctrl+Shift+F9")[3][1]
+    assert "types it again" not in mw._tutorial_pages("M3", "")[3][1]

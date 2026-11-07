@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.5.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.5/WhisperAnywhere-Setup-0.2.5.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.6.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.6/WhisperAnywhere-Setup-0.2.6.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -32,7 +32,60 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.5</strong> - the other seventeen fixes from the code review</summary>
+<summary><strong>Current build - v0.2.6</strong> - a full bug hunt: about fifty fixes, and the features it pointed to</summary>
+
+New:
+- **Free memory** (Performance) replaces Keep the model loaded and Low RAM mode: never, after 5, 15 or 60 idle minutes, or after every dictation. Low RAM mode reloaded the model for every dictation: about 2 s slower each time, a mouse shortcut that leaked out as a real click while it reloaded, and an 80 ms freeze of all input as it unloaded. Low RAM mode now becomes "after 5 idle minutes", and freeing the model no longer freezes input
+- **App profiles** (Settings): for one app, paste or type, the key that sends (Enter, Ctrl+Enter or nothing) and the full stop. Type suits games that ignore Ctrl+V; Nothing keeps Enter from running a terminal command
+- **Type the last dictation again**: `Ctrl + Alt + V` types your last dictation into the app in front, for 5 minutes after you speak. Change it or turn it off in Settings
+- A quick tap of a mouse-button shortcut stays a normal click (M3 still opens links in new tabs); only a hold dictates
+- **Esc** also cancels after you let go: while your speech is turned into text, it goes to Last transcription instead of being typed; while it types, typing stops. While you record, Esc no longer reaches the game, so its menu doesn't open. Cancelling and errors have their own sounds
+- Long dictations: speech longer than 15 s is cut into overlapping windows and joined where the words agree, as the official Voz pipeline does. In six test passages the joins went from 8 wrong (a false full stop, a wrong capital or a doubled word, sent as-is with Enter on) to none
+
+Fixed, pasting:
+- Pasting is confirmed: Windows tells Whisper Anywhere when the app actually reads the text, and only then is your old clipboard put back and Enter pressed. A busy Discord or browser tab could paste and send your old clipboard; v0.2.5's check asked the wrong window. If the app never reads it, Enter is not pressed and the error sound plays
+- The window is checked before every key: an Alt+Tab caught mid-paste took the paste and the Enter. If the chat changed while it transcribed (another Discord channel or browser tab), the text is pasted but Enter is not pressed
+- Whisper Anywhere's own windows are never typed into; Enter used to click their buttons
+- A held Shift, Alt or Win no longer turns the paste or Enter into a shortcut (Shift+Enter is a newline in Discord, Alt+Enter toggles full screen in games)
+- An app running as administrator now gets a clear message instead of "Done", and Ctrl+V works on non-Latin keyboard layouts
+- Copied files and EMF pictures survive the clipboard restore, and the restored clipboard no longer shows up again in Win+V history or clipboard monitors
+- **End with a full stop** no longer adds one after "…", ",", ":", "。" or quotes, and capitalisation no longer turns "10am" into "10Am"
+
+Fixed, the shortcut:
+- Holding the shortcut longer than 60 s typed the first part and pressed Enter while you were still talking. A hold now lasts up to 5 minutes, and a shortcut that seems stuck stops the recording and keeps the text untyped
+- The shortcut could stop working while the app said it was ready: an error in the hook ended it, and Windows drops hooks that answer too slowly. It now hooks itself in again, also after unlock and sleep
+- Ctrl+Alt+Esc could be saved and cancelled itself; a bare Enter, Space or letter is refused, and setup now asks about risky shortcuts as the main window does
+- First-run setup's shortcut box started real dictations, whose paste and Enter could save Enter as your shortcut
+
+Fixed, microphone, models and engines:
+- After a USB or Bluetooth microphone came or went, the saved microphone could quietly record from another one, and one failed re-scan left dictation dead until a restart
+- A quick tap of the shortcut said "No microphone audio was captured"; it now says it was too short
+- Turning **Dictation** off mid-recording left the microphone recording
+- A failed write of a small model marker threw away a finished dictation, and picking a model during a download or dictation marked the wrong one installed
+- Whisper's first download, and every SenseVoice and Fun-ASR load, went online with the shortcut off and no timeout. They now download first, with timeouts. SenseVoice and Fun-ASR models now live in the model folder: they download once more, and the old copies in `%USERPROFILE%\.cache\huggingface\hub` can be deleted. SenseVoice no longer types emoji
+- Model sizes in the list were two to four times too small
+- Voz's CPU copy of the model is checked against the model files, so a model update can no longer leave every dictation empty, and a damaged copy rebuilds itself. Downloads are checked against the published checksums, not just their size
+
+Fixed, settings, startup and privacy:
+- **Start with Windows** showed on while Task Manager had turned it off, and any copy of the app took over the startup entry. The switch now shows what Windows will do and says when Task Manager turned it off; switching it on turns it back on there too. Uninstalling only removes the entry if it points at the installed app
+- An unreadable settings file silently reset everything. It is now kept as `settings.json.broken` and the last good copy, `settings.json.bak`, is used; a bad value resets only itself
+- A leftover v0.1 log that was read-only or open in another program, or a model folder on a missing drive, stopped the app from starting
+- Two copies could run when one ran as administrator
+- Diagnostics and exported settings included your Windows user name
+- First-run setup and the tour popped up on a hidden sign-in start when the settings file was missing
+
+Lighter:
+- About 15–35% less CPU per Voz dictation, at the same speed: ONNX Runtime's threads now spin only briefly while they wait, instead of keeping every core busy
+- numpy no longer starts 23 idle threads and commits 747 MB
+- The listening animation draws its equaliser once per step instead of every frame, two to three times cheaper, and it no longer stays at full speed after an error
+- The model list no longer checks the model folders on every repaint
+
+Smaller fixes: dragging Settings by a switch row no longer flips the switch, a refused model pick from the tray menu no longer stays ticked, focused segment buttons show a focus ring, Settings opens fully on screen, the window comes back on screen after its monitor is unplugged, and an error with no message is no longer blank
+
+</details>
+
+<details>
+<summary><strong>v0.2.5</strong> - the other seventeen fixes from the code review</summary>
 
 - Privacy: v0.1 kept the text of every dictation in `activity.log`, and no later version removed it. It is now overwritten and deleted on the first start, along with any recording a crash left in the temp folder
 - Fixed: an app that was still busy when the dictation was pasted could read your old clipboard instead, restored too early, and with **Press Enter after text** on, send it. The old clipboard now only comes back once the app answers again, and it is no longer lost when a clipboard manager holds the clipboard for a moment or the paste fails
@@ -167,13 +220,16 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
 - Speech models: **Voz** (default), Whisper Tiny, Base, Small, Medium, Large, Large v2, Large v3, Turbo, plus optional FunASR SenseVoice Small and Fun-ASR Nano
 - Model list with install state, speed and accuracy ratings, size, and resource needs
-- Hardware controls for Auto, CPU, GPU, Whisper precision, CPU threads, fallback, and RAM/VRAM modes
-- The installed model loads in the background at startup and stays loaded for instant dictation
+- Hardware controls for Auto, CPU, GPU, Whisper precision, CPU threads, fallback, Low VRAM mode and when to free the model's memory
+- The installed model loads in the background at startup and stays loaded for instant dictation, or is freed after the idle minutes you pick
 - Download progress for Voz, with the UI responsive throughout
 - Local transcription with Voz (ONNX Runtime) or `faster-whisper`, with optional local FunASR support
-- Clipboard paste insertion into the focused Windows app, and typed text in full-screen games
-- Restores the previous clipboard (text, rich text and images) after the paste
-- Voxel start and stop sounds, preloaded for instant playback, with a volume slider
+- Clipboard paste insertion into the focused Windows app, and typed text in full-screen games, confirmed before Enter is pressed
+- App profiles: paste or type, the send key and the full stop, per app
+- Restores the previous clipboard (text, rich text, images and copied files) once the app has read the paste
+- A shortcut that types the last dictation again, and Esc to cancel until the text is typed
+- Mouse-button shortcuts that dictate while held and stay a normal click when tapped
+- Voxel start, stop, cancel and error sounds, preloaded for instant playback, with a volume slider
 - Optional Windows startup launch hidden in the tray
 - Manual **Check for updates** button that opens the GitHub release page when a newer release is available
 - Safe diagnostics copy/save for support, with personal paths sanitized and no transcripts
@@ -203,7 +259,7 @@ After the app is built into an EXE, the user should not need to install Python, 
 
 [Voz](https://huggingface.co/desert-ant-labs/voz) by Desert Ant Labs is NVIDIA Parakeet TDT 0.6B v3 converted for on-device use. It writes punctuated, capitalized text in Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, and Ukrainian. For other languages, pick a Whisper model.
 
-Voz's official SDKs run its pipeline in a Swift/WebAssembly core, so Whisper Anywhere reimplements that part in Python (`src/core/voz_engine.py`): the fused mel frontend layout, windows of up to 15 s cut at pauses, and TDT greedy decoding. The first load rewrites the published ONNX graphs once for desktop CPUs (`src/core/voz_graphs.py`):
+Voz's official SDKs run its pipeline in a Swift/WebAssembly core, so Whisper Anywhere reimplements that part in Python (`src/core/voz_engine.py`): the fused mel frontend layout, TDT greedy decoding, and speech longer than 15 s cut into full 15 s windows that overlap by up to 3 s, each starting at the quietest moment, and joined where at least two words agree, as the official pipeline does. The first load rewrites the published ONNX graphs once for desktop CPUs (`src/core/voz_graphs.py`) and checks that copy against the model files on every later load:
 
 - the encoder only processes as much audio as you recorded instead of a fixed 15 s window,
 - the decoder runs one lane per window instead of a fixed 16,
@@ -226,7 +282,7 @@ Voz always runs on the CPU and needs no tuning. The **Performance** panel mostly
 - **Auto / CPU / GPU**: where Whisper and FunASR run. GPU needs a compatible CUDA setup; with **Fall back to the CPU** on, a GPU failure continues on the CPU.
 - **CPU threads**: Auto uses one thread per physical core. Going past that (hyper-threads) slows speech models down.
 - **Whisper precision**: Auto picks int8 on the CPU and float16 on the GPU.
-- **Keep the model loaded**: dictation starts instantly. **Low RAM mode** unloads after every dictation and stays on the CPU.
+- **Free memory**: Never keeps the model loaded, so dictation starts instantly. After 5, 15 or 60 idle minutes frees its memory (about 0.6 GB for Voz) until you dictate again, which then takes a couple of seconds longer. After every dictation frees it each time.
 - **Low VRAM mode**: int8 on the GPU, to fit next to games or other AI apps.
 
 ## Optional FunASR Support
@@ -252,11 +308,11 @@ Verify the full local path:
 .\scripts\test_funasr_live.ps1
 ```
 
-The first run includes model load time. Later runs reuse the warmed model when **Keep model loaded** is enabled, which is the path where FunASR's speed advantage shows up.
+The first run includes model load time. Later runs reuse the warmed model unless **Free memory** is set to after every dictation, which is the path where FunASR's speed advantage shows up.
 
-Then pick a FunASR model in the model list and click **Download and use**. FunASR models are cached under the app model folder when possible. On Windows, the app enables the OS certificate store for FunASR downloads so Hugging Face / ModelScope downloads work on systems where Python's bundled certificate store misses a local root certificate.
+Then pick a FunASR model in the model list and click **Download and use**. FunASR models download into the model folder's `funasr` subfolder before they load, and a downloaded model loads without going online. On Windows, the app enables the OS certificate store for downloads so Hugging Face downloads work on systems where Python's bundled certificate store misses a local root certificate.
 
-FunASR transcribes source-language speech; the existing **Translate to English** option still belongs to Whisper models.
+FunASR transcribes speech in the language spoken.
 
 ## Developer Setup From Source
 
@@ -300,7 +356,7 @@ python .\src\main.py
 pytest
 ```
 
-The `tests\` suite covers `SettingsManager`, mocked `Transcriber` runtime logic, `AudioRecorder`, mocked `TextInserter` clipboard behavior, and the Voz pipeline (input layout, window cutting, TDT decoding) without launching the Qt UI. When the Voz bundle is downloaded, `tests\test_voz_engine.py` also transcribes `tests\data\hello.wav` end to end; set `VOZ_MODEL_ROOT` to point it at a model folder.
+The `tests\` suite covers `SettingsManager`, mocked `Transcriber` runtime logic, `AudioRecorder`, mocked `TextInserter` clipboard behavior, and the Voz pipeline (input layout, window splicing, TDT decoding) without launching the Qt UI. To also run the real-model Voz tests, set `WA_VOZ_TEST_MODELS` to a copy of a model folder (it holds `voz\web`); they rewrite that copy's CPU graphs, so never point it at the folder the app uses.
 
 ### 7. Run lint and formatting checks
 
@@ -410,7 +466,9 @@ Models (Voz lives in its `voz` subfolder; it can be a folder link to another dri
 %LOCALAPPDATA%\Whisper Anywhere\models
 ```
 
-Recordings are never written to disk. FunASR is the one engine that only reads files, so for it each recording becomes a short-lived WAV in `%TEMP%` that is overwritten (10 alternating passes plus a random one), renamed and deleted right after transcription.
+Recordings are never written to disk, with any engine.
+
+Settings keep one backup of the last good file, `settings.json.bak`. A settings file that could not be read is kept as `settings.json.broken` (numbered if there are several) instead of being overwritten.
 
 ## Settings Defaults
 
@@ -422,19 +480,28 @@ Recordings are never written to disk. FunASR is the one engine that only reads f
   "hotkey_default_version": 3,
   "start_sound_path": "",
   "stop_sound_path": "",
+  "retype_shortcut": "Ctrl+Alt+V",
+  "insert_method": "auto",
+  "app_profiles": {},
   "feedback_volume": 0.5,
   "device": "cpu",
   "compute_type": "int8",
-  "performance_preset": "balanced",
   "runtime_default_version": 2,
   "use_gpu_if_available": false,
   "fallback_to_cpu": true,
-  "low_ram_mode": false,
   "low_vram_mode": false,
   "warn_before_large_models": true,
-  "keep_model_loaded": true,
+  "unload_model_after": "never",
   "cpu_threads": "auto",
   "auto_download_models": true
+}
+```
+
+`unload_model_after` is `never`, `5`, `15`, `60` (idle minutes) or `each`. An app profile looks like this:
+
+```json
+"app_profiles": {
+  "windowsterminal.exe": { "insert_method": "auto", "send_key": "none", "full_stop": "off" }
 }
 ```
 
@@ -444,8 +511,9 @@ Recordings are never written to disk. FunASR is the one engine that only reads f
 - No file transcription tab yet.
 - No cloud API mode yet.
 - No command replacements yet, so saying `slash` will transcribe as the word `slash` for now.
-- Files copied in File Explorer are not put back after a paste; text, rich text and images are.
-- Typing into elevated Administrator apps may require running Whisper Anywhere as Administrator too.
+- Typing into elevated Administrator apps requires running Whisper Anywhere as Administrator too; it says so instead of typing.
+- The retype shortcut is a key combination; mouse buttons can only be the dictation shortcut.
+- When **Free memory** has freed the model, the next dictation loads it again (about 2 s). The shortcut hooks step aside while it loads, so in those seconds Esc can't cancel it and the shortcut can't start a new recording.
 - The first model setup can take time and needs internet access.
 - GPU mode needs a compatible CUDA setup; otherwise Auto/GPU Preferred can fall back to CPU.
 
@@ -457,11 +525,15 @@ Check Windows Settings > Privacy & security > Microphone and make sure desktop a
 
 ### Shortcut does not start recording
 
-Restart the app. If it still fails, change the shortcut in the app. Some security software may block global keyboard hooks.
+Check that **Dictation on** is switched on. The shortcut hooks itself in again when Windows drops it; if it still fails, restart the app or change the shortcut. Some security software may block global keyboard hooks.
+
+### The app does not start with Windows
+
+Open Settings: if it says Task Manager turned it off, switch **Start with Windows** on there, which turns it back on in Task Manager too.
 
 ### Text does not appear in the target app
 
-Click into the text box first; in games, open the chat box before you speak. If the target app or game runs as Administrator, Windows blocks other apps from typing into it, so run Whisper Anywhere as Administrator too. Some anti-cheat systems block typed input from other apps entirely.
+Click into the text box first; in games, open the chat box before you speak. The status line says why the text didn't arrive, and the text stays in **Last transcription**: press `Ctrl + Alt + V` to type it again. For a game that ignores Ctrl+V, add an app profile with **Type**. If the target app or game runs as Administrator, Windows blocks other apps from typing into it, so run Whisper Anywhere as Administrator too. Some anti-cheat systems block typed input from other apps entirely.
 
 ### GPU does not work
 

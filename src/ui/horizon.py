@@ -8,7 +8,8 @@ works a cyan scanner sweeps along the front.
 
 Everything is projected with one small perspective model (see `_point`), so
 terrain, trees and the equaliser always line up. The sky and terrain are drawn
-once into a cached pixmap; each frame only adds clouds, stars and the voice.
+once into a cached pixmap, the equaliser columns once per row shift; each frame
+only adds clouds, stars and the glow.
 """
 
 from __future__ import annotations
@@ -179,6 +180,9 @@ class VoiceHorizon(QWidget):
         self._voice: deque[list[int]] = deque(maxlen=VOICE_ROWS)
         self._cache: QPixmap | None = None
         self._cache_key: tuple = ()
+        self._voice_layer: QPixmap | None = None
+        self._glow: QRadialGradient | None = None
+        self._voice_key: tuple = ()
         self._cloud = self._cloud_path()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -236,7 +240,8 @@ class VoiceHorizon(QWidget):
                 row = [0] * self._columns
             self._voice.appendleft(row)
             self._peak *= 0.35
-            if self.mode == "idle" and not any(any(r) for r in self._voice):
+            # Once the last rows have rolled out, idle and error drop back to the cloud rate.
+            if self.mode not in ("listening", "busy") and not any(any(r) for r in self._voice):
                 self._apply_timer()
         self.update()
 
@@ -516,10 +521,36 @@ class VoiceHorizon(QWidget):
                      self._point(band.stop, 0.25, 1.02), self._point(band.start, 0.25, 1.02)]
             painter.drawPolygon(QPolygonF(front))
             return
+        # The columns and their glow change only when the rows shift, so the
+        # frames in between reuse the last drawing.
         busy = self.mode == "busy"
+        key = (self.width(), self.height(), self.devicePixelRatioF(), busy, tuple(map(tuple, rows)))
+        if key != self._voice_key:
+            self._voice_layer, self._glow = self._render_voice(rows, busy)
+            self._voice_key = key
+        if self._voice_layer is not None:
+            painter.drawPixmap(0, 0, self._voice_layer)
+        if self._glow is not None:
+            # Warm light spilling over the scene, stronger the louder you speak.
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+            painter.fillRect(QRectF(self.rect()), self._glow)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+    def _render_voice(self, rows: list[list[int]], busy: bool) -> tuple[QPixmap | None, QRadialGradient | None]:
+        """The equaliser columns on a clear layer, and the glow brush that goes with them."""
+        columns = self._geometry[3]
+        total = sum(sum(heights) for heights in rows if len(heights) == columns)
+        if not total:
+            return None, None
+        ratio = self.devicePixelRatioF()
+        layer = QPixmap(int(self.width() * ratio), int(self.height() * ratio))
+        layer.setDevicePixelRatio(ratio)
+        layer.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(layer)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
         hot = QColor(COLORS["cyan"] if busy else COLORS["accent"])
         bright = QColor("#B9F1F8" if busy else COLORS["accent_light"])
-        total = 0
         for row in range(len(rows) - 1, -1, -1):
             heights = rows[row]
             if len(heights) != columns:
@@ -529,7 +560,6 @@ class VoiceHorizon(QWidget):
                 height = heights[column]
                 if height <= 0:
                     continue
-                total += height
                 ground = 1
                 top = _mix(bright, "#FFFFFF", 0.25)
                 top.setAlphaF(fade)
@@ -546,19 +576,14 @@ class VoiceHorizon(QWidget):
                     painter.drawLine(self._point(column + 0.08, row + 0.08, ground + level),
                                      self._point(column + 0.92, row + 0.08, ground + level))
                 painter.setPen(Qt.PenStyle.NoPen)
-        if total:
-            # Warm light spilling over the scene, stronger the louder you speak.
-            centre = self._point(columns / 2, 0.5, 3)
-            radius = self.width() * 0.45
-            light = QRadialGradient(centre, radius)
-            colour = QColor(hot)
-            colour.setAlpha(min(120, 20 + total))
-            light.setColorAt(0, colour)
-            colour.setAlpha(0)
-            light.setColorAt(1, colour)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            painter.fillRect(QRectF(self.rect()), light)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        painter.end()
+        light = QRadialGradient(self._point(columns / 2, 0.5, 3), self.width() * 0.45)
+        colour = QColor(hot)
+        colour.setAlpha(min(120, 20 + total))
+        light.setColorAt(0, colour)
+        colour.setAlpha(0)
+        light.setColorAt(1, colour)
+        return layer, light
 
 
 class MicWheel(QAbstractButton):
