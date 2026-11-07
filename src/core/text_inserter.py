@@ -216,6 +216,17 @@ def _window_processes(hwnd: int) -> frozenset[int]:
     return frozenset(pids)
 
 
+def _clipboard_reader() -> int:
+    """The process reading the clipboard right now; 0 when it opened the
+    clipboard with no window, as Chromium apps (Discord, Chrome, Edge) do on a
+    worker thread. pywin32 raises for that instead of returning 0, and a
+    WndProc that raises hands the reader no text."""
+    try:
+        return _window_pid(win32clipboard.GetOpenClipboardWindow())
+    except Exception:
+        return 0
+
+
 def _process_name(pid: int) -> str:
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid) if pid else None
     if not handle:
@@ -375,8 +386,7 @@ class _ClipboardOwner:
 
     def _render_format(self, hwnd: int, message: int, fmt: int, lparam: int) -> int:
         if fmt == CF_UNICODETEXT:
-            reader = win32clipboard.GetOpenClipboardWindow()
-            self.rendered(_window_pid(reader) if reader else 0)
+            self.rendered(_clipboard_reader())
         return 0
 
     def _render_all_formats(self, hwnd: int, message: int, wparam: int, lparam: int) -> int:
@@ -403,7 +413,10 @@ class _ClipboardOwner:
         offer = self.current
         if offer is None:
             return
-        target = reader_pid in offer.pids
+        # ponytail: a read with no window (reader_pid 0) can't be traced to its
+        # app, so after the Ctrl+V it counts as the target's: Chromium apps read
+        # so. A windowless monitor reading text in that moment would pass for it.
+        target = reader_pid in offer.pids or (offer.pasted and not reader_pid)
         if not offer.pasted and not target:
             # Nothing pastes yet: a monitor that ignores the private formats
             # and reads every new copy (Free Download Manager does, within

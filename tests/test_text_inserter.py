@@ -6,6 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+import pywintypes
 
 import core.text_inserter as text_module
 from core.hotkey_listener import REPLAY_MARKER
@@ -73,6 +74,11 @@ class FakeClipboard:
     def GetClipboardOwner(self) -> int:
         return self.owner
 
+    def GetOpenClipboardWindow(self) -> int:
+        if not self.opener:  # as pywin32: an error, not 0, for a clipboard opened with no window
+            raise pywintypes.error(0, "GetOpenClipboardWindow", "No error message is available")
+        return self.opener
+
     def RegisterClipboardFormat(self, name: str) -> int:
         return self.formats.setdefault(name, 49000 + len(self.formats))
 
@@ -139,9 +145,16 @@ class FakeApp:
         self.seen: dict[int, object] = {}
 
     def paste(self, pid: int = TARGET_PID) -> None:
+        """Read the clipboard as the app with that pid, through the clipboard
+        window that is its pid here; 0 opens it with no window, as Chromium
+        apps (Discord, Chrome, Edge) do from a worker thread."""
         self.seen = dict(self.clipboard.data)
         if self.clipboard.data.get(13) is DELAYED:
-            self.owner.rendered(pid)  # Windows asks the owner window: WM_RENDERFORMAT
+            self.clipboard.opener = pid
+            try:  # Windows asks the owner window: WM_RENDERFORMAT
+                self.owner._render_format(OWNER, text_module.WM_RENDERFORMAT, 13, 0)
+            except Exception:
+                pass  # pywin32 prints a failed WndProc's error; the reader just gets no text
         self.log.append(("read", pid))
         text = self.clipboard.data.get(13)
         self.pasted.append(None if text is DELAYED else text)  # None: the owner handed over nothing
@@ -182,8 +195,9 @@ def windows(monkeypatch):
 
 
 @pytest.fixture
-def paste(windows):
+def paste(windows, monkeypatch):
     """Pasting into the fake app, which reads the clipboard when it gets Ctrl+V."""
+    monkeypatch.setattr(text_module, "_window_pid", lambda hwnd: hwnd)  # see FakeApp.paste
     inserter = text_module.TextInserter()
     inserter._owner = owner = FakeOwner(windows.clipboard)
     app = FakeApp(windows.clipboard, owner, windows.log)
@@ -378,17 +392,28 @@ def test_a_read_after_the_wait_still_pastes_the_text_and_the_old_clipboard_follo
     assert not enter_pressed(paste.log)
 
 
-@pytest.mark.parametrize("reader", [MONITOR_PID, 0])  # a clipboard monitor; a reader with no window
-def test_another_reader_first_means_no_enter_and_no_restore_under_the_paste(
-    paste, monkeypatch, reader: int
-) -> None:
+def test_an_app_reading_with_no_window_gets_the_paste_and_enter(paste) -> None:
+    # Chromium apps (Discord, Chrome, Edge) read the clipboard on a worker
+    # thread that opens it with no window. pywin32 raised for that inside
+    # WM_RENDERFORMAT, so v0.2.6 handed them nothing: "The app did not take
+    # the paste", in every Chromium app.
+    paste.user32.on_key = lambda vk, up: paste.app.paste(0) if vk == VK_V and not up else None
+
+    note = paste.inserter.insert_text("ship it", DISCORD, BEN)
+
+    assert paste.app.pasted == ["ship it."]
+    assert steps(paste.log) == ["empty", "read", "empty", "enter"]  # offer, read, restore, Enter
+    assert note == ""
+
+
+def test_another_reader_first_means_no_enter_and_no_restore_under_the_paste(paste, monkeypatch) -> None:
     # A monitor that ignores the private formats takes the rendering, and
     # then the app's own read can no longer be seen.
     monkeypatch.setattr(text_module, "READ_CAP_SECONDS", 2)
 
     def monitor_then_app(vk: int, up: bool) -> None:
         if vk == VK_V and not up:
-            paste.app.paste(reader)
+            paste.app.paste(MONITOR_PID)
             paste.app.paste()
 
     paste.user32.on_key = monitor_then_app
@@ -403,14 +428,15 @@ def test_another_reader_first_means_no_enter_and_no_restore_under_the_paste(
     assert paste.clipboard.data[13] == "keep me"
 
 
-def test_a_monitor_reading_before_the_ctrl_v_gets_nothing_and_enter_still_goes_out(paste) -> None:
+@pytest.mark.parametrize("monitor_pid", [MONITOR_PID, 0])  # one with a clipboard window; one with none
+def test_a_monitor_reading_before_the_ctrl_v_gets_nothing_and_enter_still_goes_out(paste, monitor_pid) -> None:
     # Monitors that ignore the private formats read every new copy at once,
     # long before our Ctrl+V. Rendered for them, the text could no longer be
     # rendered on request, and the app's own read was never seen.
     def monitor() -> None:
         if paste.clipboard.data.get(13) is DELAYED:  # our text was just offered
             paste.clipboard.on_close = None
-            paste.app.paste(MONITOR_PID)
+            paste.app.paste(monitor_pid)
 
     paste.clipboard.on_close = monitor
 
