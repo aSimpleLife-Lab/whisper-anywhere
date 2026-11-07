@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.6.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.6/WhisperAnywhere-Setup-0.2.6.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.7.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.7/WhisperAnywhere-Setup-0.2.7.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -32,7 +32,18 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.6</strong> - a full bug hunt: about fifty fixes, and the features it pointed to</summary>
+<summary><strong>Current build - v0.2.7</strong> - the shortcut gets a process of its own</summary>
+
+- The shortcut's keyboard and mouse hooks now run in a small helper process: a second `Whisper Anywhere.exe`, started with `--hotkey-helper`. Windows waits on these hooks for every key press and click on the PC, and loading or freeing a speech model keeps the app busy for seconds, so until now the hooks stepped aside during every load. They no longer do:
+  - After **Free memory** has freed the model, Esc cancels the dictation that loads it again, and it stays out of your game while you record
+  - Letting go of a mouse-button shortcut (M3) during that load no longer reaches the game as a real click
+- Your own paste, Enter and typed text are marked as yours, so they never fire a V or Enter shortcut, however late they reach the hooks
+- The helper ends with the app, even when the app crashes, so it can never keep M3 or Esc from other apps. If the helper stops by itself, the app starts a new one, and a shortcut held at that moment stops the recording without typing it
+
+</details>
+
+<details>
+<summary><strong>v0.2.6</strong> - a full bug hunt: about fifty fixes, and the features it pointed to</summary>
 
 New:
 - **Free memory** (Performance) replaces Keep the model loaded and Low RAM mode: never, after 5, 15 or 60 idle minutes, or after every dictation. Low RAM mode reloaded the model for every dictation: about 2 s slower each time, a mouse shortcut that leaked out as a real click while it reloaded, and an 80 ms freeze of all input as it unloaded. Low RAM mode now becomes "after 5 idle minutes", and freeing the model no longer freezes input
@@ -513,7 +524,7 @@ Settings keep one backup of the last good file, `settings.json.bak`. A settings 
 - No command replacements yet, so saying `slash` will transcribe as the word `slash` for now.
 - Typing into elevated Administrator apps requires running Whisper Anywhere as Administrator too; it says so instead of typing.
 - The retype shortcut is a key combination; mouse buttons can only be the dictation shortcut.
-- When **Free memory** has freed the model, the next dictation loads it again (about 2 s). The shortcut hooks step aside while it loads, so in those seconds Esc can't cancel it and the shortcut can't start a new recording.
+- When **Free memory** has freed the model, the next dictation loads it again (about 2 s). The shortcut and Esc keep working in those seconds; the app acts on them once the model is in.
 - The first model setup can take time and needs internet access.
 - GPU mode needs a compatible CUDA setup; otherwise Auto/GPU Preferred can fall back to CPU.
 
@@ -525,7 +536,7 @@ Check Windows Settings > Privacy & security > Microphone and make sure desktop a
 
 ### Shortcut does not start recording
 
-Check that **Dictation on** is switched on. The shortcut hooks itself in again when Windows drops it; if it still fails, restart the app or change the shortcut. Some security software may block global keyboard hooks.
+Check that **Dictation on** is switched on. The shortcut hooks itself in again when Windows drops it; if it still fails, restart the app or change the shortcut. Some security software may block global keyboard hooks. The hooks run in a second `Whisper Anywhere.exe` process (started with `--hotkey-helper`), which security software must allow too; it ends with the app.
 
 ### The app does not start with Windows
 
