@@ -32,10 +32,11 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, and the shortcut gets a process of its own</summary>
+<summary><strong>Current build - v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, Voz loads twice as fast, and the shortcut gets a process of its own</summary>
 
 - Fixed: v0.2.6 pasted nothing into Discord, Chrome, Edge and other Chromium apps, and said "The app did not take the paste". These apps read the clipboard from a background thread that has no window, and v0.2.6's paste check failed on that read and handed them nothing
 - New: **Tab** can be the shortcut. The shortcut box records Tab and Shift+Tab instead of jumping to the next setting. Tab on its own is kept from other apps while it is the shortcut, so starting or stopping a dictation never moves the cursor out of the chat box. Alt+Tab, Shift+Tab and Ctrl+Tab work as usual
+- Faster: Voz loads in about 0.9 s instead of 2 s, so the first dictation after **Free memory** has freed it types about a second sooner. The second it saves went to preparation steps that made dictation neither faster nor more accurate. With Voz loaded the app also uses up to about 130 MB less memory, because a long dictation's working memory is now given back as soon as it is done
 - The shortcut's keyboard and mouse hooks now run in a small helper process: a second `Whisper Anywhere.exe`, started with `--hotkey-helper`. Windows waits on these hooks for every key press and click on the PC, and loading or freeing a speech model keeps the app busy for seconds, so until now the hooks stepped aside during every load. They no longer do:
   - After **Free memory** has freed the model, Esc cancels the dictation that loads it again, and it stays out of your game while you record
   - Letting go of a mouse-button shortcut (M3) during that load no longer reaches the game as a real click

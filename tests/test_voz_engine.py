@@ -125,6 +125,7 @@ class _ScriptedDecoder:
 def _bare_model(decoder, encoder=None, pieces=()) -> ve.VozModel:
     model = ve.VozModel.__new__(ve.VozModel)
     model.encoder, model.decoder, model.pieces = encoder, decoder, list(pieces)
+    model._encoder_run = None
     model.embedding = np.broadcast_to(np.zeros(ve.EMBED_DIM, np.float32), (ve.BLANK + 1, ve.EMBED_DIM))
     return model
 
@@ -217,7 +218,7 @@ def test_a_seam_leaves_no_false_sentence_break() -> None:
 class _RampEncoder:
     """Projections carrying each frame's absolute position, read off a ramp signal."""
 
-    def run(self, _outputs, feed):
+    def run(self, _outputs, feed, _run_options=None):
         first_sample = feed["audio_rows"][0, ve.FRONT_PAD % ve.HOP, 0, ve.FRONT_PAD // ve.HOP]
         frames = feed["key_bias"].shape[1]
         projections = np.zeros((1, ve.EMBED_DIM, 1, frames), np.float32)
@@ -299,6 +300,54 @@ def test_voz_threads_spin_only_briefly_after_each_run(tmp_path, fake_runtime) ->
     for options in _FakeSession.options:
         assert options.get_session_config_entry("session.intra_op.spin_duration_us") == "200"
         assert options.intra_op_num_threads == 6
+
+
+def test_the_encoder_skips_the_load_steps_that_never_paid_off(tmp_path, fake_runtime) -> None:
+    # ORT's graph rewrites and buffer-reuse planning took 1.2 s of the
+    # encoder's 2 s load, which every dictation after an idle unload waits
+    # for, and changed neither its speed nor its text. The decoder keeps
+    # them: it runs a hundred times a dictation and was slower without.
+    ve.VozModel(tmp_path)
+
+    encoder, decoder = _FakeSession.options
+    assert encoder.graph_optimization_level == onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
+    assert not encoder.enable_mem_reuse
+    assert decoder.graph_optimization_level == onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+    assert decoder.enable_mem_reuse
+
+
+def _private_bytes() -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t)
+            for name in (
+                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage",
+                "PeakPagefileUsage", "PrivateUsage",
+            )
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    counters = Counters(cb=ctypes.sizeof(Counters))
+    assert kernel32.K32GetProcessMemoryInfo(wintypes.HANDLE(-1), ctypes.byref(counters), counters.cb)
+    return counters.PrivateUsage
+
+
+@needs_model
+def test_a_dictation_gives_the_encoders_working_memory_back() -> None:
+    # The arena kept a 15 s window's working memory, 160 MB, for as long as
+    # the model stayed loaded.
+    model = ve.VozModel(_model_root())
+    model.transcribe(np.zeros(SR, np.float32))  # the arenas' first use
+    before = _private_bytes()
+
+    model.transcribe(np.random.default_rng(0).standard_normal(15 * SR).astype(np.float32) / 10)
+
+    assert _private_bytes() - before < 80_000_000
 
 
 def test_a_cache_that_fails_to_load_is_rebuilt_once(tmp_path, fake_runtime) -> None:
