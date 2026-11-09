@@ -32,11 +32,12 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, Voz loads twice as fast, and the shortcut gets a process of its own</summary>
+<summary><strong>Current build - v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, Voz loads twice as fast and while you speak, and the shortcut gets a process of its own</summary>
 
 - Fixed: v0.2.6 pasted nothing into Discord, Chrome, Edge and other Chromium apps, and said "The app did not take the paste". These apps read the clipboard from a background thread that has no window, and v0.2.6's paste check failed on that read and handed them nothing
 - New: **Tab** can be the shortcut. The shortcut box records Tab and Shift+Tab instead of jumping to the next setting. Tab on its own is kept from other apps while it is the shortcut, so starting or stopping a dictation never moves the cursor out of the chat box. Alt+Tab, Shift+Tab and Ctrl+Tab work as usual
 - Faster: Voz loads in about 0.9 s instead of 2 s, so the first dictation after **Free memory** has freed it types about a second sooner. The second it saves went to preparation steps that made dictation neither faster nor more accurate. With Voz loaded the app also uses up to about 130 MB less memory, because a long dictation's working memory is now given back as soon as it is done
+- Faster: after **Free memory** has freed Voz, the next dictation loads it while you speak instead of after you let go. Its text then arrives as fast as any other dictation's: 0.14 s instead of 0.9 s after a 3 s dictation. That recording gets a larger microphone buffer, so the 0.7 s the load keeps the app busy never costs your first words. A mouse shortcut loads Voz only once it is held, so a quick click stays just a click
 - The shortcut's keyboard and mouse hooks now run in a small helper process: a second `Whisper Anywhere.exe`, started with `--hotkey-helper`. Windows waits on these hooks for every key press and click on the PC, and loading or freeing a speech model keeps the app busy for seconds, so until now the hooks stepped aside during every load. They no longer do:
   - After **Free memory** has freed the model, Esc cancels the dictation that loads it again, and it stays out of your game while you record
   - Letting go of a mouse-button shortcut (M3) during that load no longer reaches the game as a real click
@@ -296,7 +297,7 @@ Voz always runs on the CPU and needs no tuning. The **Performance** panel mostly
 - **Auto / CPU / GPU**: where Whisper and FunASR run. GPU needs a compatible CUDA setup; with **Fall back to the CPU** on, a GPU failure continues on the CPU.
 - **CPU threads**: Auto uses one thread per physical core. Going past that (hyper-threads) slows speech models down.
 - **Whisper precision**: Auto picks int8 on the CPU and float16 on the GPU.
-- **Free memory**: Never keeps the model loaded, so dictation starts instantly. After 5, 15 or 60 idle minutes frees its memory (about 0.6 GB for Voz) until you dictate again, which then takes a couple of seconds longer. After every dictation frees it each time.
+- **Free memory**: Never keeps the model loaded, so dictation starts instantly. After 5, 15 or 60 idle minutes frees its memory (about 0.6 GB for Voz) until you dictate again. Voz then loads while you speak; Whisper and FunASR models load after you let go, which takes a few seconds longer. After every dictation frees it each time.
 - **Low VRAM mode**: int8 on the GPU, to fit next to games or other AI apps.
 
 ## Optional FunASR Support
@@ -527,7 +528,7 @@ Settings keep one backup of the last good file, `settings.json.bak`. A settings 
 - No command replacements yet, so saying `slash` will transcribe as the word `slash` for now.
 - Typing into elevated Administrator apps requires running Whisper Anywhere as Administrator too; it says so instead of typing.
 - The retype shortcut is a key combination; mouse buttons can only be the dictation shortcut.
-- When **Free memory** has freed the model, the next dictation loads it again (about 2 s). The shortcut and Esc keep working in those seconds; the app acts on them once the model is in.
+- When **Free memory** has freed the model, the next dictation loads it again: Voz while you speak (about 0.7 s), other models after you let go (a few seconds). The shortcut and Esc keep working meanwhile; the app acts on them once the model is in. If you let go during Voz's load, up to 0.7 s of sound from just after you let go can end up in that dictation.
 - The first model setup can take time and needs internet access.
 - GPU mode needs a compatible CUDA setup; otherwise Auto/GPU Preferred can fall back to CPU.
 

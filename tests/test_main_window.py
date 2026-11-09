@@ -650,7 +650,10 @@ def _flow_window(**overrides) -> SimpleNamespace:
         _deliver=True,
         _undelivered_reason="",
         _loading_ui=False,
-        model_manager=SimpleNamespace(is_model_ready=lambda name=None: True, selected_model=lambda: "voz"),
+        model_manager=SimpleNamespace(
+            is_model_ready=lambda name=None: True, selected_model=lambda: "voz", model_engine=lambda name=None: "voz"
+        ),
+        transcriber=SimpleNamespace(is_loaded=lambda: True),
         _selected_microphone_id=lambda: "default",
         _resolve_saved_microphone=lambda: "default",
         text_inserter=SimpleNamespace(get_foreground_window=lambda: "discord", get_window_target=lambda hwnd: None),
@@ -687,6 +690,76 @@ def test_a_tap_or_an_esc_cancel_keeps_the_idle_unload_countdown() -> None:
         end(window)
 
         assert window._idle_unload_timer.active
+
+
+def test_voz_freed_for_idle_time_loads_while_you_speak() -> None:
+    # The first dictation after Free memory waited 0.9 s for the load after
+    # the release. It loads while you speak now, into a recording with
+    # headroom for the GIL that load holds.
+    cases = {
+        ("voz", False, "5"): (True, [{"while_listening": True}]),
+        ("voz", True, "5"): (False, []),  # still loaded: as before
+        ("voz", False, "each"): (False, []),  # freed after every dictation: loads after
+        ("whisper", False, "5"): (False, []),  # its GIL hold is unmeasured
+    }
+    for (engine, loaded, unload), (headroom, loads) in cases.items():
+        events: list[object] = []
+        window = _flow_window(
+            settings_manager=FakeSettings(unload_model_after=unload, shortcut="Tab", shortcut_mode="hold"),
+            transcriber=SimpleNamespace(is_loaded=lambda loaded=loaded: loaded),
+            warm_up_selected_model=lambda **kwargs: events.append(kwargs),
+        )
+        window.model_manager.model_engine = lambda name=None, engine=engine: engine
+        window.audio_recorder.start = lambda *args, **kwargs: events.append(("start", kwargs.get("headroom")))
+
+        mw.MainWindow.start_listening(window, from_shortcut=True)
+
+        assert events == [("start", headroom), *loads], (engine, loaded, unload)
+
+
+def test_a_mouse_shortcut_loads_voz_only_once_it_is_held() -> None:
+    # A quick middle-click stays a click. Loading Voz for every one would
+    # keep Free memory from ever freeing it.
+    loads: list[dict] = []
+    window = _flow_window(
+        transcriber=SimpleNamespace(is_loaded=lambda: False),
+        warm_up_selected_model=lambda **kwargs: loads.append(kwargs),
+    )
+
+    mw.MainWindow.start_listening(window, from_shortcut=True)  # M3 goes down
+    assert loads == []  # a tap ends here: drop_tapped_recording stops the cue timer
+    window._play_delayed_start_cue()  # TAP_SECONDS later, still held
+    assert loads == [{"while_listening": True}]
+
+
+def test_a_load_while_listening_waits_for_the_first_audio() -> None:
+    # The recorder dates its audio by its first buffers: had they waited
+    # behind the load's GIL hold, it would date the recording late and
+    # stop before the end of it was in.
+    calls: list[str] = []
+    window = _window()
+    window.audio_recorder.wait_for_audio = lambda timeout: calls.append("audio") or True
+    transcriber = SimpleNamespace(prepare_selected_model=lambda settings, model_name: calls.append("load"))
+
+    mw.MainWindow._warm_up_worker(window, 1, transcriber, {}, "voz", while_listening=True)
+    mw.MainWindow._warm_up_worker(window, 2, transcriber, {}, "voz")
+
+    assert calls == ["audio", "load", "load"]
+
+
+def test_only_the_dictations_own_load_runs_while_listening(monkeypatch) -> None:
+    started = _no_threads(monkeypatch)
+    window = _window(_is_listening=True, _is_transcribing=False, _is_preparing_model=False, _warm_up_generation=0)
+    window._pipeline_busy = lambda: True
+    window.settings_manager.all.return_value = {"unload_model_after": "5"}
+    window.transcriber.is_loaded.return_value = False
+    window.model_manager.is_model_ready.return_value = True
+
+    mw.MainWindow.warm_up_selected_model(window)  # the start-up warm-up waits its turn
+    assert started == []
+    mw.MainWindow.warm_up_selected_model(window, while_listening=True)
+    assert [item[0] for item in started] == ["thread"]
+    assert started[0][2][-1] is True  # its worker waits for the first audio
 
 
 def test_dictation_off_while_it_transcribes_keeps_the_text_untyped() -> None:

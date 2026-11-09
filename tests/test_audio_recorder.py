@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -189,6 +191,79 @@ def test_start_and_audio_callback_manage_buffers_and_levels(monkeypatch) -> None
     assert 0.0 < levels[-1] <= 1.0
 
     recorder.cancel()
+
+
+class MmeDevice(FakeStream):
+    """Hands the callback a 0.1 s buffer as each one fills, as PortAudio's
+    MME input does. While `stall` is set (a model load holding the GIL) the
+    buffers queue up instead, and a stop drops whatever is still queued."""
+
+    BUFFER = 1600
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.stall = threading.Event()
+        self.started_at = 0.0
+
+    def start(self) -> None:
+        super().start()
+        self.started_at = time.monotonic()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        handed = 0
+        while not self.stopped:
+            filled = int((time.monotonic() - self.started_at) * audio_module.SAMPLE_RATE) // self.BUFFER
+            while handed < filled and not self.stall.is_set() and not self.stopped:
+                self.kwargs["callback"](np.ones((self.BUFFER, 1), np.int16), self.BUFFER, None, 0)
+                handed += 1
+            time.sleep(0.005)
+
+
+def test_a_recording_that_a_model_load_runs_during_gets_buffer_headroom(monkeypatch) -> None:
+    # Loading Voz holds the GIL for 0.7 s, and the audio callback needs it:
+    # MME's default 0.18 s of buffers would drop the first words said meanwhile.
+    created: list[dict] = []
+
+    class Recorded(FakeStream):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            created.append(kwargs)
+
+    monkeypatch.setattr(audio_module.sd, "InputStream", Recorded)
+    recorder = audio_module.AudioRecorder()
+
+    recorder.start("default", headroom=True)
+    recorder.cancel()
+    recorder.start("default")
+    recorder.cancel()
+
+    assert created[0]["latency"] >= 2 * 0.73  # twice the longest hold measured
+    assert created[1].get("latency") is None  # every other recording as before
+
+
+def test_a_stop_keeps_the_audio_still_queued_behind_a_model_load(monkeypatch) -> None:
+    # MME drops the buffers the callback hasn't taken when an input stream
+    # stops, so a short dictation released during the load lost its end.
+    devices: list[MmeDevice] = []
+    monkeypatch.setattr(
+        audio_module.sd, "InputStream", lambda **kwargs: devices.append(MmeDevice(**kwargs)) or devices[-1]
+    )
+    recorder = audio_module.AudioRecorder()
+    recorder.start("default", headroom=True)
+    device = devices[0]
+
+    assert recorder.wait_for_audio(1.0)
+    time.sleep(0.25)
+    device.stall.set()  # the load takes the GIL...
+    time.sleep(0.4)
+    threading.Timer(0.3, device.stall.clear).start()  # ...and gives it back
+    asked = time.monotonic()
+    audio = recorder.stop()
+
+    said = asked - device.started_at
+    assert audio.size / audio_module.SAMPLE_RATE >= said - 0.02
+    assert time.monotonic() - asked < 0.6  # the backlog, then one buffer at most
 
 
 def test_list_input_devices_returns_structured_microphone_entries(monkeypatch) -> None:
