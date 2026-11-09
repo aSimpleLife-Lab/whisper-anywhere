@@ -555,6 +555,7 @@ QT_TRIGGER_KEYS = {
     _qt_key_value(Qt.Key.Key_Return): "Enter",
     _qt_key_value(Qt.Key.Key_Enter): "Enter",
     _qt_key_value(Qt.Key.Key_Tab): "Tab",
+    _qt_key_value(Qt.Key.Key_Backtab): "Tab",  # Shift+Tab arrives as Backtab
     _qt_key_value(Qt.Key.Key_Escape): "Esc",
     _qt_key_value(Qt.Key.Key_Backspace): "Backspace",
     _qt_key_value(Qt.Key.Key_Delete): "Delete",
@@ -663,6 +664,11 @@ class ShortcutCaptureInput(QLineEdit):
             event.accept()
             return
         super().contextMenuEvent(event)
+
+    def focusNextPrevChild(self, next: bool) -> bool:
+        if self._capturing:  # Tab and Shift+Tab are keys to record, not a move to the next box
+            return False
+        return super().focusNextPrevChild(next)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if not self._capturing:

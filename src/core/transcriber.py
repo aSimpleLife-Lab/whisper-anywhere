@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -45,8 +44,8 @@ def _failure_reason(exc: BaseException) -> str:
 def _local_copy(download: Callable[..., str], repo: str, cache_dir: str, ready: bool) -> str:
     """The Hugging Face repo's folder in the model folder, downloaded first if need be.
 
-    Called outside the hook pause: a download can take minutes, and a stalled
-    proxy must not leave the shortcut dead. A ready model never asks huggingface.co.
+    Called before the load, with timeouts: a download can take minutes, and a
+    stalled proxy must not hang it. A ready model never asks huggingface.co.
     """
     if ready:
         try:
@@ -96,9 +95,6 @@ class Transcriber:
         self._gpu_failed = False
         # A background warm-up and a dictation never load the model twice.
         self._lock = threading.RLock()
-        # main.py points this at the hotkey listener's pause: a model load holds
-        # Python's GIL for seconds, and Windows input must not wait on our hooks.
-        self.load_guard = nullcontext
         # Models that loaded once: they load offline even if their marker
         # file could not be written.
         self._ready: set[str] = set()
@@ -165,12 +161,10 @@ class Transcriber:
         with self._lock:
             if self._model is None:
                 return
-            # Freeing a model holds the GIL (Voz: 70-99 ms), and Windows holds
-            # back every click and key press while a hook cannot answer: the
-            # hooks step aside, as for a load.
-            with self.load_guard():
-                self._model = None
-                self._loaded_key = None
+            # Freeing it holds the GIL (Voz: 70-99 ms). The shortcut hooks run
+            # in their own process (core.hotkey_helper), so input never waits.
+            self._model = None
+            self._loaded_key = None
 
     def _looks_like_silence(self, audio: Audio) -> bool:
         if isinstance(audio, np.ndarray):
@@ -230,12 +224,10 @@ class Transcriber:
                 f"in your browser from {voz_engine.HF_FILES_URL} and put them in {voz_engine.bundle_path(model_path)}."
             ) from exc
         try:
-            with self.load_guard():
-                # The old sessions go first, inside the pause: freeing them holds
-                # the GIL, and their mapped cache files would block a rebuild.
-                self._model = None
-                self._loaded_key = None
-                model = voz_engine.VozModel(model_path, cpu_threads=threads)
+            # The old sessions go first: their mapped cache files would block a rebuild.
+            self._model = None
+            self._loaded_key = None
+            model = voz_engine.VozModel(model_path, cpu_threads=threads)
             if warm_up:  # a dictation's own clip warms it up
                 model.warm_up()
         except Exception as exc:
@@ -498,21 +490,20 @@ class Transcriber:
         kwargs: dict[str, Any] = {
             "device": runtime.device,
             "compute_type": runtime.compute_type,
-            "local_files_only": True,  # a local folder: nothing to fetch with the hooks off
+            "local_files_only": True,  # a local folder: downloaded first, with timeouts
         }
         if runtime.device == "cpu":
             # faster-whisper's own default is 4 threads, a fraction of most CPUs.
             kwargs["cpu_threads"] = runtime.cpu_threads or default_cpu_threads()
-        with self.load_guard():
-            return whisper_model_class(model_dir, **kwargs)
+        return whisper_model_class(model_dir, **kwargs)
 
     def _funasr_files(
         self, info: Any, model_name: str, settings: dict[str, Any]
     ) -> dict[str, str]:
         """Local folders for the model and its VAD and punctuation helpers.
 
-        Left to itself, funasr fetches them inside the hook pause, with no
-        timeout, into the profile's Hugging Face cache.
+        Left to itself, funasr fetches them as it loads, with no timeout,
+        into the profile's Hugging Face cache.
         """
         from funasr.download.name_maps_from_hub import name_maps_hf
         from huggingface_hub import snapshot_download
@@ -555,8 +546,7 @@ class Transcriber:
             kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
         if info.punc_model:
             kwargs["punc_model"] = files["punc_model"]
-        with self.load_guard():  # local folders: nothing to fetch with the hooks off
-            return automodel_class(**kwargs)
+        return automodel_class(**kwargs)  # local folders: nothing to fetch
 
     def _should_retry_on_cpu(self, settings: dict[str, Any]) -> bool:
         return (

@@ -730,6 +730,7 @@ class MainWindow(QMainWindow):
         self._transcribing_model = ""
         self._start_cue_played = False
         self._error_cue_pending = False
+        self._load_ahead = False  # this dictation loads Voz while it records
         self._insert_id = 0
         self._active_insert_id = 0
         self._insert_cancel: threading.Event | None = None
@@ -1473,11 +1474,8 @@ class MainWindow(QMainWindow):
     def _reset_transcriber(self) -> None:
         self._warm_up_generation += 1
         old = self.transcriber
-        guard = old.load_guard  # model loads unhook the keyboard and mouse
         self.transcriber = Transcriber(self.model_manager)
-        self.transcriber.load_guard = guard
-        # Dropped here, the old model would be freed on this thread with the
-        # hooks live: an ~80 ms freeze of every click and key on the PC.
+        # Off this thread: unload waits for a dictation still using the old model.
         threading.Thread(target=old.unload, daemon=True).start()
 
     def _schedule_warm_up(self) -> None:
@@ -1504,7 +1502,7 @@ class MainWindow(QMainWindow):
 
     def _unload_worker(self, transcriber: Transcriber) -> None:
         try:
-            transcriber.unload()  # pauses the hooks: freeing it holds the GIL ~80 ms
+            transcriber.unload()  # freeing it holds the GIL ~80 ms
         except Exception as exc:
             self._append_activity_log(f"unload failed: {_error_text(exc)}")
         self.unload_done.emit()
@@ -1520,15 +1518,17 @@ class MainWindow(QMainWindow):
         self._refresh_model_status()
         self.set_status("Ready", "The speech engine was reset and is loading again.")
 
-    def warm_up_selected_model(self) -> None:
+    def warm_up_selected_model(self, while_listening: bool = False) -> None:
         """Load the installed model in the background so the first dictation is instant.
 
         Recording stays available meanwhile; a dictation that finishes first
-        simply waits for the load inside the transcriber.
+        simply waits for the load inside the transcriber. `while_listening`
+        is the load a dictation started: it runs while that one records.
         """
         settings = self.settings_manager.all()
+        busy = (self._is_transcribing or self._is_preparing_model) if while_listening else self._pipeline_busy()
         if (
-            self._pipeline_busy()
+            busy
             or self.transcriber.is_loaded()
             or not self.model_manager.is_model_ready()
             or str(settings.get("unload_model_after", "never")) == "each"
@@ -1538,15 +1538,26 @@ class MainWindow(QMainWindow):
         generation = self._warm_up_generation
         transcriber = self.transcriber
         model_name = self.model_manager.selected_model()
-        self._append_activity_log(f"warm-up start: {model_name}")
+        self._append_activity_log(f"warm-up start: {model_name}{' while listening' if while_listening else ''}")
         self.model_status.setText(f"Loading {self.model_manager.selected_info().label} into memory...")
         threading.Thread(
-            target=self._warm_up_worker, args=(generation, transcriber, settings, model_name), daemon=True
+            target=self._warm_up_worker,
+            args=(generation, transcriber, settings, model_name, while_listening),
+            daemon=True,
         ).start()
 
     def _warm_up_worker(
-        self, generation: int, transcriber: Transcriber, settings: dict[str, Any], model_name: str
+        self,
+        generation: int,
+        transcriber: Transcriber,
+        settings: dict[str, Any],
+        model_name: str,
+        while_listening: bool = False,
     ) -> None:
+        if while_listening:
+            # The recorder dates its audio by the first buffers, so they come
+            # in before the load's GIL hold can stall them.
+            self.audio_recorder.wait_for_audio(1.0)
         started = time.perf_counter()
         try:
             transcriber.prepare_selected_model(settings, model_name=model_name)
@@ -1777,6 +1788,8 @@ class MainWindow(QMainWindow):
         if self._is_listening:
             self._start_cue_played = True
             self.feedback.emit(True)
+            if self._load_ahead:
+                self.warm_up_selected_model(while_listening=True)
         elif self._error_cue_pending:  # the microphone did not open
             self._error_cue_pending = False
             self.cue.emit("error")
@@ -1830,13 +1843,24 @@ class MainWindow(QMainWindow):
         microphone_id = self._selected_microphone_id()
         # None for this app's own windows and the taskbar: nothing to type into.
         self._target_hwnd = self.text_inserter.get_foreground_window()
+        # Voz freed for idle time loads while you speak, not after the
+        # release. Its load holds the GIL for 0.7 s, which the recording's
+        # headroom rides out. ponytail: Voz only; measure Whisper's and
+        # FunASR's GIL holds before they load ahead too.
+        load_ahead = (
+            self.model_manager.model_engine() == "voz"
+            and not self.transcriber.is_loaded()
+            and str(self.settings_manager.get("unload_model_after", "never")) != "each"
+        )
         try:
-            self.audio_recorder.start(str(microphone_id), self.level_changed.emit)
+            self.audio_recorder.start(str(microphone_id), self.level_changed.emit, headroom=load_ahead)
         except AudioRecorderError:
             # Unplugged since the device list was read? Read it again, once.
             self.audio_recorder.rescan()
             try:
-                self.audio_recorder.start(self._resolve_saved_microphone() or "default", self.level_changed.emit)
+                self.audio_recorder.start(
+                    self._resolve_saved_microphone() or "default", self.level_changed.emit, headroom=load_ahead
+                )
             except AudioRecorderError as exc:
                 self._append_activity_log("microphone start failed")
                 self.set_status("Error", _error_text(exc))
@@ -1848,8 +1872,10 @@ class MainWindow(QMainWindow):
                 return
         self._append_activity_log("listening")
         self._set_listening(True)
-        if from_shortcut and self._mouse_hold_shortcut():
-            self._cue_timer.start()  # a tap stays a click and gets no sound
+        self._load_ahead = load_ahead
+        mouse_hold = from_shortcut and self._mouse_hold_shortcut()
+        if mouse_hold:
+            self._cue_timer.start()  # a tap stays a click: no sound, and no load
         else:
             self._start_cue_played = True
             self.feedback.emit(True)
@@ -1860,6 +1886,8 @@ class MainWindow(QMainWindow):
             if mode == "hold"
             else "Speak now. Press the shortcut again to type it.",
         )
+        if load_ahead and not mouse_hold:  # last: the start sound and Esc hold-back never wait for it
+            self.warm_up_selected_model(while_listening=True)
 
     def _selected_microphone_id(self) -> str:
         microphone_id = self._resolve_saved_microphone()
@@ -2316,7 +2344,7 @@ class MainWindow(QMainWindow):
                 if parse_shortcut(shortcut).mouse_trigger:
                     problem = "Use a key combination here: the mouse is only watched for the dictation button."
                 else:
-                    problem = shortcut_problem(shortcut)
+                    problem = shortcut_problem(shortcut, retype=True)
             except ValueError as exc:
                 problem = str(exc)
             if not problem and same_shortcut(shortcut, str(self.settings_manager.get("shortcut", ""))):
@@ -2599,7 +2627,8 @@ class MainWindow(QMainWindow):
             if isinstance(values, dict) and str(values.get("retype_shortcut") or ""):
                 retype = str(values["retype_shortcut"])
                 dictation = str(values.get("shortcut") or self.settings_manager.get("shortcut", ""))
-                if parse_shortcut(retype).mouse_trigger or shortcut_problem(retype) or same_shortcut(retype, dictation):
+                unusable = parse_shortcut(retype).mouse_trigger or shortcut_problem(retype, retype=True)
+                if unusable or same_shortcut(retype, dictation):
                     raise ValueError(f"the retype shortcut {retype} can't be used")
             ignored = self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:

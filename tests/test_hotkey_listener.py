@@ -183,8 +183,8 @@ def keyboard_hook(monkeypatch, shortcut: str):
     listener.start()
     hook = made[0]
 
-    def send(msg: int, vk: int, scan: int = 0, flags: int = 0) -> str:
-        data = hook._KBDLLHOOKSTRUCT(vkCode=vk, scanCode=scan, flags=flags)
+    def send(msg: int, vk: int, scan: int = 0, flags: int = 0, extra: int = 0) -> str:
+        data = hook._KBDLLHOOKSTRUCT(vkCode=vk, scanCode=scan, flags=flags, dwExtraInfo=extra)
         try:
             converted = hook._convert(0, msg, ctypes.pointer(data))
         except SystemHook.SuppressException:
@@ -194,53 +194,6 @@ def keyboard_hook(monkeypatch, shortcut: str):
         return "passed"
 
     return listener, send
-
-
-def test_model_loads_unhook_the_keyboard_and_mouse(monkeypatch) -> None:
-    # A model load holds Python's GIL for seconds. With our hooks in, Windows
-    # held back every click and key press on the PC until it finished.
-    hooks: list = []
-
-    class FakeHook:
-        def __init__(self, **_callbacks) -> None:
-            self.live = False
-
-        def start(self) -> None:
-            self.live = True
-            hooks.append(self)
-
-        def stop(self) -> None:
-            self.live = False
-
-        def join(self, timeout=None) -> None:
-            pass
-
-        def is_alive(self) -> bool:
-            return self.live
-
-    def live() -> int:
-        return sum(hook.live for hook in hooks)
-
-    monkeypatch.setattr(hotkey_module, "pynput_keyboard", SimpleNamespace(Listener=FakeHook))
-    monkeypatch.setattr(hotkey_module, "pynput_mouse", SimpleNamespace(Listener=FakeHook))
-    listener = HotkeyListener("M3")
-    listener.start()
-    assert live() == 2  # keyboard and mouse
-    with listener.paused():
-        assert live() == 0
-    assert live() == 2
-    released: list[object] = []
-    timed_out: list[bool] = []
-    listener.released.connect(released.append)
-    listener.timed_out.connect(lambda: timed_out.append(True))
-    listener._press_token("mouse3")  # held as a load starts, let go during it
-    with listener.paused():
-        pass
-    # The recording still stops, but its release was never seen: nothing is typed.
-    assert timed_out == [True] and released == []
-    with listener.paused():
-        listener.stop()  # Dictation switched off during a load stays off
-    assert live() == 0
 
 
 def test_mouse_buttons_parse_as_shortcut_triggers() -> None:
@@ -259,12 +212,44 @@ def test_shortcuts_that_cancel_themselves_or_fire_while_typing_are_refused() -> 
     # cancelled itself. B15: setup could save a bare Enter.
     for shortcut in ("Ctrl+Alt+Esc", "Esc", "Shift+Escape"):
         assert "Esc" in shortcut_problem(shortcut)
-    for shortcut in ("Enter", "Tab", "Backspace", "Space", "Q", "7"):
+    for shortcut in ("Enter", "Backspace", "Space", "Q", "7"):
         assert "while you type" in shortcut_problem(shortcut)
     for shortcut in ("Ctrl+Alt+Q", "M3", "F9", "Ctrl+Enter", "Shift+Q", "Backtick"):
         assert shortcut_problem(shortcut) == ""
     assert shortcut_problem("Ctrl+Q+W")  # can't be read either
     assert shortcut_warning("Ctrl+Alt+Esc") == shortcut_problem("Ctrl+Alt+Esc")  # the warning line too
+
+
+def test_tab_alone_can_dictate_but_not_retype() -> None:
+    # Ben wants Tab to toggle dictation. As that shortcut it is held back from
+    # apps, so it can't fire while typing; retype keys still reach apps.
+    assert shortcut_problem("Tab") == ""
+    assert "no longer reaches apps" in shortcut_warning("Tab")
+    assert "while you type" in shortcut_problem("Tab", retype=True)
+    assert shortcut_problem("Ctrl+Alt+V", retype=True) == ""
+
+
+def test_a_tab_shortcut_is_kept_from_apps_but_alt_tab_still_switches(monkeypatch) -> None:
+    # A Tab that reached the app would move the focus off the text box at
+    # every toggle. Alt+Tab must still switch windows, and never dictate.
+    listener, send = keyboard_hook(monkeypatch, "Tab")
+    listener.update_shortcut("Tab", "toggle")
+    events: list[str] = []
+    listener.pressed.connect(lambda: events.append("pressed"))
+    down, up, sysdown, sysup = 0x0100, 0x0101, 0x0104, 0x0105
+    tab, alt = (0x09, 0x0F), (0xA4, 0x38)
+    assert send(down, *tab) == "withheld"
+    assert send(down, *tab) == "withheld"  # key repeat
+    assert send(up, *tab) == "withheld"
+    assert events == ["pressed"]
+    assert send(sysdown, *alt) == "passed"
+    assert send(sysdown, *tab) == "passed"
+    assert send(sysup, *tab) == "passed"
+    assert send(up, *alt) == "passed"
+    assert events == ["pressed"]
+    assert send(down, *tab) == "withheld" and events == ["pressed", "pressed"]  # the second toggle
+    assert send(up, *tab) == "withheld"
+    listener.stop()
 
 
 def test_ctrl_letter_shortcuts_match() -> None:
@@ -321,32 +306,18 @@ def test_altgr_and_our_own_typing_are_not_shortcut_keys(monkeypatch) -> None:
 
 def test_our_own_paste_and_enter_never_fire_the_shortcut(monkeypatch) -> None:
     # The paste's Ctrl+V and the Enter after it are injected keys too: an
-    # Enter shortcut fired on them and could start a new recording.
-    import ctypes
-
-    from pynput import keyboard
-
-    hooks: list = []
-    monkeypatch.setattr(keyboard.Listener, "start", lambda self: hooks.append(self))
-    monkeypatch.setattr(hotkey_module, "INJECTED_GRACE_SECONDS", 0.0, raising=False)
-    listener = HotkeyListener("Enter")
+    # Enter shortcut fired on them and could start a new recording. The hook
+    # runs in its own process, which can't see when the app pastes, so each
+    # key the app sends carries the marker instead.
+    listener, send = keyboard_hook(monkeypatch, "Enter")
     events: list[str] = []
     listener.pressed.connect(lambda: events.append("pressed"))
-    listener.start()
-    hook = hooks[0]
-
-    def send(msg: int) -> None:
-        data = hook._KBDLLHOOKSTRUCT(vkCode=0x0D, scanCode=0x1C, flags=0x10)  # injected
-        converted = hook._convert(0, msg, ctypes.pointer(data))
-        if converted is not None:
-            hook._process(*converted)
-
-    with listener.ignoring_injected():
-        send(0x0100)
-        send(0x0101)
+    down, up, enter, injected = 0x0100, 0x0101, (0x0D, 0x1C), 0x10
+    send(down, *enter, flags=injected, extra=hotkey_module.REPLAY_MARKER)
+    send(up, *enter, flags=injected, extra=hotkey_module.REPLAY_MARKER)
     assert events == []
 
-    send(0x0100)  # a tool such as AutoHotkey may still press the shortcut
+    send(down, *enter, flags=injected)  # a tool such as AutoHotkey may still press the shortcut
     assert events == ["pressed"]
     listener.stop()
 
@@ -421,8 +392,7 @@ def test_the_retype_shortcut_fires_once_per_press(monkeypatch) -> None:
     send(sysdown, *q)  # the main shortcut is untouched by all that
     send(sysup, *q)
     assert events == ["retype", "retype", "pressed"]
-    with listener.ignoring_injected():
-        send(sysdown, *v, flags=0x10)  # our own paste's V, with Ctrl and Alt still held
+    send(sysdown, *v, flags=0x10, extra=hotkey_module.REPLAY_MARKER)  # our paste's V, Ctrl and Alt held
     assert events == ["retype", "retype", "pressed"]
     listener.update_retype_shortcut("")  # off
     send(sysdown, *v)
@@ -513,12 +483,12 @@ def test_a_failing_hook_callback_is_logged_not_fatal(monkeypatch) -> None:
     from pynput import keyboard, mouse
     from pynput._util.win32 import SystemHook
 
-    from core import app_log
-
     made: list = []
     monkeypatch.setattr(keyboard.Listener, "start", lambda self: made.append(self))
     monkeypatch.setattr(mouse.Listener, "start", lambda self: made.append(self))
     listener = HotkeyListener("M3")
+    logged: list[str] = []  # the helper process sends these to the app's log
+    listener.logged.connect(logged.append)
     listener.start()
     keyboard_hook, mouse_hook = made
 
@@ -536,21 +506,19 @@ def test_a_failing_hook_callback_is_logged_not_fatal(monkeypatch) -> None:
         pass
     keyboard_hook._process(0x0100, 0x51)  # Q down
     assert keyboard_hook._queue.empty() and mouse_hook._queue.empty()  # nothing kills them
-    logged = "\n".join(app_log.recent())
-    assert "mouse hook broke" in logged and "key callback broke" in logged
+    assert "hotkey: _mouse_filter failed: RuntimeError('mouse hook broke')" in logged
+    assert "hotkey: _on_press failed: RuntimeError('key callback broke')" in logged
     listener.stop()
 
 
-def test_a_hook_that_died_with_an_error_cannot_leak_a_pause(hooks) -> None:
-    # IN-5: what join() re-raised skipped the pause's clean-up, so the hooks
-    # never came back after the next model load, and a live one was orphaned.
+def test_a_hook_that_died_with_an_error_cannot_orphan_the_other(hooks) -> None:
+    # IN-5: what join() re-raised skipped the clean-up after it, so the
+    # hooks never came back, and a live one was orphaned.
     listener = HotkeyListener("M3")
     listener.start()
     keyboard_hook, mouse_hook = hooks
     keyboard_hook.failure = RuntimeError("a callback failed")
-    with listener.paused():
-        assert not mouse_hook.live
-    assert listener._pauses == 0
+    listener.rehook()
     assert [hook.live for hook in hooks] == [False, False, True, True]
     hooks[2].failure = RuntimeError("again")
     listener.stop()  # Dictation off
@@ -570,10 +538,6 @@ def test_rehook_puts_in_fresh_hooks_and_lets_go_of_a_hold(hooks, watchdogs) -> N
     listener.rehook()
     assert [hook.live for hook in hooks] == [False, False, True, True]
     assert events == ["timed_out"]  # its release went to the lock screen
-    with listener.paused():
-        listener.rehook()  # a model load has the hooks off: they stay off
-        assert not any(hook.live for hook in hooks)
-    assert len(hooks) == 6 and hooks[4].live and hooks[5].live
     listener.stop()
 
 
@@ -612,7 +576,7 @@ def test_dead_or_deaf_hooks_are_put_back(hooks, clock, monkeypatch) -> None:
     keys = HotkeyListener("Ctrl+Alt+Q")  # only the keyboard hooked
     keys.start()
     clock.now += 1
-    keys._keyboard_filter(0x0100, SimpleNamespace(flags=0, vkCode=0x41, scanCode=0x1E))
+    keys._keyboard_filter(0x0100, SimpleNamespace(flags=0, vkCode=0x41, scanCode=0x1E, dwExtraInfo=None))
     clock.now += 10
     idle[0] = 0.0  # the mouse moved, which the keyboard hook never sees
     keys._check_hooks()

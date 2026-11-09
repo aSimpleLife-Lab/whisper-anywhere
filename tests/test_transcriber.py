@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 import threading
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,20 +19,6 @@ from core.transcriber import (
 )
 
 SPEECH = np.full(16000, 0.1, np.float32)  # 1 s, well above the silence floor
-
-
-def recording_guard(events: list[str]):
-    """Stands in for HotkeyListener.paused: the hooks are off in between."""
-
-    @contextmanager
-    def paused():
-        events.append("pause")
-        try:
-            yield
-        finally:
-            events.append("resume")
-
-    return paused
 
 
 def install_fake_voz(monkeypatch: pytest.MonkeyPatch, events: list[str]):
@@ -58,23 +43,18 @@ def install_fake_voz(monkeypatch: pytest.MonkeyPatch, events: list[str]):
     return FakeVoz
 
 
-def hooks_off(events: list[str]) -> bool:
-    return events.count("pause") > events.count("resume")
-
-
-def test_a_new_voz_load_frees_the_old_model_first_inside_the_pause(monkeypatch, tmp_path) -> None:
-    # The old sessions were freed after the new load, outside the pause (an
-    # input stall), and their mapped cache files blocked a cache rebuild.
+def test_a_new_voz_load_frees_the_old_model_first(monkeypatch, tmp_path) -> None:
+    # Freed after the new load, the old sessions' mapped cache files blocked
+    # a cache rebuild.
     events: list[str] = []
     install_fake_voz(monkeypatch, events)
     transcriber = Transcriber(FakeModelManager("voz"))
-    transcriber.load_guard = recording_guard(events)
     transcriber._load_voz_model(make_settings(tmp_path, cpu_threads=4), warm_up=False)
     events.clear()
 
     transcriber._load_voz_model(make_settings(tmp_path, cpu_threads=8), warm_up=False)
 
-    assert events == ["pause", "free", "load", "resume"]
+    assert events == ["free", "load"]
 
 
 @pytest.fixture(autouse=True)
@@ -145,18 +125,10 @@ def make_settings(tmp_path, **overrides):
     return settings
 
 
-def test_voz_loads_with_the_input_hooks_paused(monkeypatch, tmp_path) -> None:
-    from contextlib import contextmanager
-
+def test_voz_loads_then_warms_up(monkeypatch, tmp_path) -> None:
     from core import voz_engine
 
     events: list[str] = []
-
-    @contextmanager
-    def paused():
-        events.append("pause")
-        yield
-        events.append("resume")
 
     class FakeVoz:
         def __init__(self, *args, **kwargs) -> None:
@@ -168,27 +140,20 @@ def test_voz_loads_with_the_input_hooks_paused(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(voz_engine, "missing_files", lambda root: [])
     monkeypatch.setattr(voz_engine, "VozModel", FakeVoz)
     transcriber = Transcriber(FakeModelManager())
-    transcriber.load_guard = paused
     transcriber._load_voz_model(make_settings(tmp_path), warm_up=True)
-    # Running the model releases the GIL, so the hooks are back for the warm-up.
-    assert events == ["pause", "load", "resume", "warm-up"]
+    assert events == ["load", "warm-up"]
 
 
-def test_each_frees_the_model_after_every_dictation_with_the_hooks_paused(
-    monkeypatch, tmp_path
-) -> None:
-    # Dropping the ONNX Runtime sessions holds the GIL for 70-99 ms: with the
-    # hooks in place, every click and key on the PC waited for it.
+def test_each_frees_the_model_after_every_dictation(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     install_fake_voz(monkeypatch, events)
     transcriber = Transcriber(FakeModelManager("voz"))
-    transcriber.load_guard = recording_guard(events)
 
     text = transcriber.transcribe(SPEECH, make_settings(tmp_path, unload_model_after="each"))
 
     assert text == "hello voz"
     assert not transcriber.is_loaded()
-    assert events == ["pause", "load", "resume", "transcribe", "pause", "free", "resume"]
+    assert events == ["load", "transcribe", "free"]
 
 
 @pytest.mark.parametrize("after", ["never", "5", "15", "60", None])
@@ -231,9 +196,7 @@ def test_low_ram_mode_no_longer_unloads_or_forces_the_cpu(monkeypatch, tmp_path)
     assert transcriber._resolve_funasr_device(settings, []) == "cuda"
 
 
-def test_unload_waits_for_a_running_dictation_and_frees_with_the_hooks_paused(
-    monkeypatch, tmp_path
-) -> None:
+def test_unload_waits_for_a_running_dictation(monkeypatch, tmp_path) -> None:
     # The window's idle timer must never pull the model from under a dictation.
     events: list[str] = []
     fake_voz = install_fake_voz(monkeypatch, events)
@@ -246,7 +209,6 @@ def test_unload_waits_for_a_running_dictation_and_frees_with_the_hooks_paused(
 
     monkeypatch.setattr(fake_voz, "transcribe", slow_transcribe)
     transcriber = Transcriber(FakeModelManager("voz"))
-    transcriber.load_guard = recording_guard(events)
     dictation = threading.Thread(
         target=transcriber.transcribe, args=(SPEECH, make_settings(tmp_path))
     )
@@ -262,10 +224,10 @@ def test_unload_waits_for_a_running_dictation_and_frees_with_the_hooks_paused(
     dictation.join(5)
     idle_timeout.join(5)
     assert not transcriber.is_loaded()
-    assert events == ["pause", "load", "resume", "pause", "free", "resume"]
+    assert events == ["load", "free"]
 
-    transcriber.unload()  # nothing loaded: the hooks stay where they are
-    assert events.count("pause") == 2
+    transcriber.unload()  # nothing loaded: nothing happens
+    assert events == ["load", "free"]
 
 
 def test_only_the_background_warm_up_runs_the_warm_up_pass(monkeypatch, tmp_path) -> None:
@@ -287,11 +249,11 @@ def install_fake_whisper(
     monkeypatch: pytest.MonkeyPatch, whisper_model_class, events: list[str] | None = None
 ) -> list[tuple]:
     """faster-whisper whose download never leaves the PC: records
-    (model, cache_dir, local_files_only, hooks off)."""
+    (model, cache_dir, local_files_only)."""
     downloads: list[tuple] = []
 
     def download_model(size_or_id, cache_dir=None, local_files_only=False):
-        downloads.append((size_or_id, cache_dir, local_files_only, hooks_off(events or [])))
+        downloads.append((size_or_id, cache_dir, local_files_only))
         return str(Path(cache_dir) / f"whisper-{size_or_id}")
 
     monkeypatch.setitem(
@@ -307,11 +269,11 @@ def install_fake_funasr(
     monkeypatch: pytest.MonkeyPatch, automodel_class, events: list[str] | None = None
 ) -> list[tuple]:
     """FunASR whose Hugging Face downloads never leave the PC: records
-    (repo, cache_dir, local_files_only, hooks off)."""
+    (repo, cache_dir, local_files_only)."""
     snapshots: list[tuple] = []
 
     def snapshot_download(repo_id, cache_dir=None, local_files_only=False):
-        snapshots.append((repo_id, cache_dir, local_files_only, hooks_off(events or [])))
+        snapshots.append((repo_id, cache_dir, local_files_only))
         return str(Path(cache_dir) / repo_id.replace("/", "--"))
 
     monkeypatch.setitem(
@@ -342,11 +304,9 @@ class SpeakingWhisper:
         return [FakeSegment("hello")], {"language": "en"}
 
 
-def test_whisper_downloads_with_the_hooks_on_and_loads_its_folder_inside_the_pause(
-    monkeypatch, tmp_path
-) -> None:
-    # The first download ran inside the hook pause with no timeout: M3 leaked
-    # for the whole download, and a stalled proxy left the hooks off (SW-1).
+def test_whisper_downloads_first_and_loads_its_folder_offline(monkeypatch, tmp_path) -> None:
+    # The first download ran inside the load with no timeout, and a stalled
+    # proxy hung it (SW-1).
     events: list[str] = []
 
     class LocalWhisper(SpeakingWhisper):
@@ -356,13 +316,12 @@ def test_whisper_downloads_with_the_hooks_on_and_loads_its_folder_inside_the_pau
 
     downloads = install_fake_whisper(monkeypatch, LocalWhisper, events)
     transcriber = Transcriber(FakeModelManager("small"))
-    transcriber.load_guard = recording_guard(events)
 
     assert transcriber.transcribe(SPEECH, make_settings(tmp_path, device="cpu")) == "hello"
 
     models = tmp_path / "models"
-    assert downloads == [("small", str(models), False, False)]
-    assert events == ["pause", f"load {models / 'whisper-small'} offline=True", "resume"]
+    assert downloads == [("small", str(models), False)]
+    assert events == [f"load {models / 'whisper-small'} offline=True"]
 
 
 def test_a_first_whisper_download_trusts_the_windows_certificate_store(monkeypatch, tmp_path) -> None:
@@ -410,11 +369,9 @@ def test_a_ready_whisper_model_never_asks_huggingface(monkeypatch, tmp_path) -> 
     assert calls == [False, True, True, False]  # not ready, ready, ready but gone
 
 
-def test_funasr_downloads_into_the_model_folder_with_the_hooks_on(
-    monkeypatch, tmp_path
-) -> None:
-    # funasr asked huggingface.co inside the hook pause, with no timeout, on
-    # every load, and kept 1-2 GB in %USERPROFILE%\.cache (SW-1, SW-4).
+def test_funasr_downloads_into_the_model_folder_first(monkeypatch, tmp_path) -> None:
+    # funasr asked huggingface.co inside the load, with no timeout, on every
+    # load, and kept 1-2 GB in %USERPROFILE%\.cache (SW-1, SW-4).
     events: list[str] = []
     created: list[dict] = []
 
@@ -428,7 +385,6 @@ def test_funasr_downloads_into_the_model_folder_with_the_hooks_on(
 
     snapshots = install_fake_funasr(monkeypatch, FakeFunASRModel, events)
     transcriber = Transcriber(FakeModelManager("sensevoice-small"))
-    transcriber.load_guard = recording_guard(events)
     settings = make_settings(tmp_path, device="cpu", unload_model_after="each")
 
     assert transcriber.transcribe(SPEECH, settings) == "hello"
@@ -436,14 +392,14 @@ def test_funasr_downloads_into_the_model_folder_with_the_hooks_on(
 
     hub = tmp_path / "models" / "funasr" / "huggingface" / "hub"
     assert snapshots == [
-        ("FunAudioLLM/SenseVoiceSmall", str(hub), False, False),
-        ("funasr/fsmn-vad", str(hub), False, False),
-        ("FunAudioLLM/SenseVoiceSmall", str(hub), True, False),  # ready now: offline
-        ("funasr/fsmn-vad", str(hub), True, False),
+        ("FunAudioLLM/SenseVoiceSmall", str(hub), False),
+        ("funasr/fsmn-vad", str(hub), False),
+        ("FunAudioLLM/SenseVoiceSmall", str(hub), True),  # ready now: offline
+        ("funasr/fsmn-vad", str(hub), True),
     ]
     assert created[0]["model"] == str(hub / "FunAudioLLM--SenseVoiceSmall")
     assert created[0]["vad_model"] == str(hub / "funasr--fsmn-vad")
-    assert events[:3] == ["pause", "load", "resume"]
+    assert events[:1] == ["load"]
 
 
 def test_a_marker_that_cannot_be_written_never_costs_a_dictation(monkeypatch, tmp_path) -> None:

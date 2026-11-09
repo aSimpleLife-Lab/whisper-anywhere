@@ -205,20 +205,27 @@ class VozModel:
         if missing:
             raise VozError(f"Voz model files are missing: {', '.join(missing)}")
         folder = bundle_path(model_root)
-        options = ort.SessionOptions()
-        options.log_severity_level = 3
-        if cpu_threads:
-            options.intra_op_num_threads = cpu_threads
-        # Pool threads spin while they wait for work: on 16 threads a 7 s
-        # dictation burned 5.3 CPU-seconds, mostly spinning, while a game
-        # wanted the cores. A 0.2 ms spin cut that to 3.5 at the same speed.
-        options.add_session_config_entry("session.intra_op.spin_duration_us", "200")
+        encoder_options = _session_options(ort, cpu_threads)
+        # ORT's graph rewrites and buffer-reuse planning took 1.2 s of the
+        # encoder's 2 s load, which every dictation after an idle unload waits
+        # for, and changed neither its speed nor its text. The decoder keeps
+        # them: it runs a hundred times a dictation and was slower without.
+        encoder_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        encoder_options.enable_mem_reuse = False
+        # Without that planning the arena would keep a 15 s window's working
+        # memory, 300 MB (with it, 160 MB), so each run gives it back.
+        # ponytail: a 15 s window peaks 130 MB higher while it runs; plan
+        # reuse again if that peak ever matters more than the load.
+        self._encoder_run = ort.RunOptions()
+        self._encoder_run.add_run_config_entry("memory.enable_memory_arena_shrinkage", "cpu:0")
         providers = providers or ["CPUExecutionProvider"]
         for rebuild in (False, True):
             encoder_path, decoder_path = ensure_cpu_graphs(folder, REVISION, rebuild)
             try:
-                self.encoder = ort.InferenceSession(str(encoder_path), options, providers=providers)
-                self.decoder = ort.InferenceSession(str(decoder_path), options, providers=providers)
+                self.encoder = ort.InferenceSession(str(encoder_path), encoder_options, providers=providers)
+                self.decoder = ort.InferenceSession(
+                    str(decoder_path), _session_options(ort, cpu_threads), providers=providers
+                )
                 break
             except Exception:
                 # Damaged where its sizes cannot show it: build it once more,
@@ -254,7 +261,7 @@ class VozModel:
         for start in starts:
             rows, mel_mask, key_bias = encoder_inputs(samples[start : start + WINDOW_SAMPLES])
             (enc_proj,) = self.encoder.run(
-                None, {"audio_rows": rows, "mel_mask": mel_mask, "key_bias": key_bias}
+                None, {"audio_rows": rows, "mel_mask": mel_mask, "key_bias": key_bias}, self._encoder_run
             )
             encoded.append(enc_proj[0, :, 0, :])
             frames.append(key_bias.shape[1])
@@ -311,6 +318,18 @@ class VozModel:
                     h[index] = h_out[index]
                     c[index] = c_out[index]
         return outputs
+
+
+def _session_options(ort: Any, cpu_threads: int | None) -> Any:
+    options = ort.SessionOptions()
+    options.log_severity_level = 3
+    if cpu_threads:
+        options.intra_op_num_threads = cpu_threads
+    # Pool threads spin while they wait for work: on 16 threads a 7 s
+    # dictation burned 5.3 CPU-seconds, mostly spinning, while a game
+    # wanted the cores. A 0.2 ms spin cut that to 3.5 at the same speed.
+    options.add_session_config_entry("session.intra_op.spin_duration_us", "200")
+    return options
 
 
 _BLANK_ONE_FRAME = -1

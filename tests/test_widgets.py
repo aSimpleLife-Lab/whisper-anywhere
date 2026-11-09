@@ -7,9 +7,9 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"  # never a real window
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QVBoxLayout, QWidget
 
-from ui.widgets import Segmented, ShellDialog, ToggleRow, stylesheet
+from ui.widgets import Segmented, ShellDialog, ShortcutCaptureInput, ToggleRow, stylesheet
 
 LEFT = Qt.MouseButton.LeftButton
 NO_KEYS = Qt.KeyboardModifier.NoModifier
@@ -95,4 +95,30 @@ def test_keyboard_focus_shows_on_segment_buttons(app) -> None:
         assert segment.hasFocus()
         assert segment.grab().toImage() != plain, value
         segment.clearFocus()
+    host.close()
+
+
+def test_the_shortcut_box_records_tab_instead_of_moving_on(app) -> None:
+    # Tab moved the focus through the window, so it could never be the shortcut.
+    host = QWidget()
+    box, other = ShortcutCaptureInput(), QLineEdit()
+    layout = QVBoxLayout(host)
+    layout.addWidget(box)
+    layout.addWidget(other)
+    captured: list[str] = []
+    box.shortcut_captured.connect(captured.append)
+    host.show()  # offscreen platform
+    host.activateWindow()
+    app.processEvents()
+
+    # Windows sends Shift+Tab as Backtab.
+    for key, modifiers in ((Qt.Key.Key_Tab, NO_KEYS), (Qt.Key.Key_Backtab, Qt.KeyboardModifier.ShiftModifier)):
+        box.setFocus()
+        box.start_capture()
+        QTest.keyClick(box, key, modifiers)
+        assert box.hasFocus()
+    assert captured == ["Tab", "Shift+Tab"]
+
+    QTest.keyClick(box, Qt.Key.Key_Tab)  # not recording: Tab moves on as usual
+    assert other.hasFocus()
     host.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -13,6 +14,11 @@ CHANNELS = 1
 # MME delivers its first buffer a moment after the stream starts: a tap
 # shorter than this is too short to be speech, not a broken microphone.
 BRIEF_SECONDS = 0.3
+# Loading Voz holds the GIL for up to 0.73 s (Ryzen 9 5950X), and _on_audio
+# needs it. MME's default 0.18 s of queued buffers would drop what was said
+# meanwhile, so a recording a load runs during queues 3 s.
+LOAD_HEADROOM_SECONDS = 3.0
+CATCH_UP_SECONDS = 2.0  # longer than any GIL hold still left when stop() runs
 
 
 class AudioRecorderError(RuntimeError):
@@ -41,6 +47,10 @@ class AudioRecorder:
         self._last_status = ""
         self._started_at = 0.0
         self._devices_changed = False
+        self._audio_flowing = threading.Event()
+        self._headroom = False
+        self._received = 0  # frames handed to _on_audio
+        self._origin = math.inf  # when the first of them was said, monotonic
         self.is_recording = False
 
     def mark_devices_changed(self) -> None:
@@ -120,9 +130,11 @@ class AudioRecorder:
         microphone_device: str = "default",
         level_callback: Callable[[float], None] | None = None,
         microphone_name: str = "",
+        headroom: bool = False,
     ) -> None:
         """Record from `microphone_device`. With `microphone_name`, only from
-        the microphone of that name, wherever Windows has moved it."""
+        the microphone of that name, wherever Windows has moved it. With
+        `headroom`, the recording outlasts a model load holding the GIL."""
         if self.is_recording:
             raise AudioRecorderError("The microphone is already recording.")
         if self._devices_changed:
@@ -134,6 +146,10 @@ class AudioRecorder:
         self._frames = []
         self._last_status = ""
         self._level_callback = level_callback
+        self._audio_flowing.clear()
+        self._headroom = headroom
+        self._received = 0
+        self._origin = math.inf
         device = None if device_id == "default" else int(device_id)
 
         try:
@@ -142,6 +158,7 @@ class AudioRecorder:
                 channels=CHANNELS,
                 dtype="int16",
                 device=device,
+                latency=LOAD_HEADROOM_SECONDS if headroom else None,  # None: sounddevice's default
                 callback=self._on_audio,
             )
             self._stream.start()
@@ -153,6 +170,10 @@ class AudioRecorder:
 
         self._started_at = time.monotonic()
         self.is_recording = True
+
+    def wait_for_audio(self, timeout: float) -> bool:
+        """True once the first buffer is in, or False after `timeout` seconds."""
+        return self._audio_flowing.wait(timeout)
 
     def _device_named(self, device_id: str, name: str) -> str:
         """The id the saved microphone has now. Windows renumbers microphones
@@ -177,6 +198,8 @@ class AudioRecorder:
             raise AudioRecorderError("The microphone is not recording.")
 
         lasted = time.monotonic() - self._started_at
+        if self._headroom:
+            self._catch_up()
         stream = self._stream
         self._stream = None
         self.is_recording = False
@@ -197,6 +220,18 @@ class AudioRecorder:
             raise AudioRecorderError("No microphone audio was captured.")
         # A quick tap ends before the first buffer: no samples, and no error.
         return audio.astype(np.float32) / 32768.0
+
+    def _catch_up(self) -> None:
+        """Wait until everything said before now is in. While a model load
+        holds the GIL, _on_audio waits and MME queues the buffers, and
+        stopping an input stream drops the ones it has not handed over.
+
+        ponytail: the release reaches this process late if it came during
+        the load, so up to that hold's length of later audio comes along."""
+        due = (time.monotonic() - self._origin) * SAMPLE_RATE
+        deadline = time.monotonic() + CATCH_UP_SECONDS
+        while self._received < due and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def cancel(self) -> None:
         stream = self._stream
@@ -225,9 +260,15 @@ class AudioRecorder:
         if status:
             self._last_status = str(status)
 
+        now = time.monotonic()
         chunk = indata.copy()
         with self._lock:
             self._frames.append(chunk)
+            self._received += frames
+            # The buffer handed over soonest after it filled dates the first
+            # sample best: one stalled behind the GIL only arrives late.
+            self._origin = min(self._origin, now - self._received / SAMPLE_RATE)
+        self._audio_flowing.set()
 
         callback = self._level_callback
         if callback is not None and chunk.size:

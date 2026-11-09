@@ -5,10 +5,13 @@ import os
 import threading
 import time
 import unicodedata
-from contextlib import nullcontext
 from dataclasses import dataclass
 from ctypes import wintypes
 from typing import Any
+
+# Marks every key we send, so the shortcut hooks, in their own process,
+# never take our paste's V or Enter for the shortcut.
+from core.hotkey_listener import REPLAY_MARKER
 
 try:
     import win32api
@@ -213,6 +216,17 @@ def _window_processes(hwnd: int) -> frozenset[int]:
     return frozenset(pids)
 
 
+def _clipboard_reader() -> int:
+    """The process reading the clipboard right now; 0 when it opened the
+    clipboard with no window, as Chromium apps (Discord, Chrome, Edge) do on a
+    worker thread. pywin32 raises for that instead of returning 0, and a
+    WndProc that raises hands the reader no text."""
+    try:
+        return _window_pid(win32clipboard.GetOpenClipboardWindow())
+    except Exception:
+        return 0
+
+
 def _process_name(pid: int) -> str:
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid) if pid else None
     if not handle:
@@ -266,7 +280,8 @@ def _send_key_event(vk: int, flags: int) -> bool:
     # A real virtual key with its scan code: pynput sent "v" as a typed
     # character on layouts without a Latin V, and never said when Windows
     # refused a key, as it does for an app run as administrator.
-    event = INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(vk, user32.MapVirtualKeyW(vk, 0), flags, 0, 0)))
+    key = KEYBDINPUT(vk, user32.MapVirtualKeyW(vk, 0), flags, 0, REPLAY_MARKER)
+    event = INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=key))
     return user32.SendInput(1, (INPUT * 1)(event), ctypes.sizeof(INPUT)) == 1
 
 
@@ -371,8 +386,7 @@ class _ClipboardOwner:
 
     def _render_format(self, hwnd: int, message: int, fmt: int, lparam: int) -> int:
         if fmt == CF_UNICODETEXT:
-            reader = win32clipboard.GetOpenClipboardWindow()
-            self.rendered(_window_pid(reader) if reader else 0)
+            self.rendered(_clipboard_reader())
         return 0
 
     def _render_all_formats(self, hwnd: int, message: int, wparam: int, lparam: int) -> int:
@@ -399,7 +413,10 @@ class _ClipboardOwner:
         offer = self.current
         if offer is None:
             return
-        target = reader_pid in offer.pids
+        # ponytail: a read with no window (reader_pid 0) can't be traced to its
+        # app, so after the Ctrl+V it counts as the target's: Chromium apps read
+        # so. A windowless monitor reading text in that moment would pass for it.
+        target = reader_pid in offer.pids or (offer.pasted and not reader_pid)
         if not offer.pasted and not target:
             # Nothing pastes yet: a monitor that ignores the private formats
             # and reads every new copy (Free Download Manager does, within
@@ -427,9 +444,6 @@ class TextInserter:
         self._pending_restore: _Offer | None = None
         self._saved_clipboard: dict[int, bytes] | None = None
         self._owner: _ClipboardOwner | None = None  # made at the first paste
-        # main.py points this at the shortcut listener: our paste, Enter and
-        # typing are injected keys, and a V or Enter shortcut must not fire.
-        self.input_guard = nullcontext
 
     def get_foreground_window(self) -> TextTarget | None:
         return self.get_window_target(int(user32.GetForegroundWindow() or 0))
@@ -476,28 +490,27 @@ class TextInserter:
         _check_cancel(cancel, "Cancelled: nothing was typed.")
         method = settings.get("insert_method", "auto")
         send_key = _send_key_setting(settings)
-        with self.input_guard():
-            if method == "type" or (method != "paste" and foreground_is_fullscreen()):
-                # Game chat boxes often ignore Ctrl+V or have no paste at all, but
-                # every text box accepts typed characters. Nothing touches the
-                # clipboard on this path.
-                self._type_text(prepared, target, cancel)
-                skipped, done = "", "typed"
-            else:
-                restore = bool(settings.get("restore_clipboard", True))
-                skipped, done = self._paste(prepared, target, restore, cancel), "pasted"
-            if send_key is None:
-                return ""
-            name, keys = send_key
-            _check_cancel(cancel, f"Cancelled: the text was {done} but not sent.")
-            skipped = skipped or self._send_key_blocker(target)
-            if skipped:
-                return f"{skipped}, so {name} was not pressed."
-            # A pasted newline is just a line break in chat apps; a real key
-            # press sends the message.
-            if not self._press(keys):
-                return f"Windows blocked {name}, so the text was not sent."
+        if method == "type" or (method != "paste" and foreground_is_fullscreen()):
+            # Game chat boxes often ignore Ctrl+V or have no paste at all, but
+            # every text box accepts typed characters. Nothing touches the
+            # clipboard on this path.
+            self._type_text(prepared, target, cancel)
+            skipped, done = "", "typed"
+        else:
+            restore = bool(settings.get("restore_clipboard", True))
+            skipped, done = self._paste(prepared, target, restore, cancel), "pasted"
+        if send_key is None:
             return ""
+        name, keys = send_key
+        _check_cancel(cancel, f"Cancelled: the text was {done} but not sent.")
+        skipped = skipped or self._send_key_blocker(target)
+        if skipped:
+            return f"{skipped}, so {name} was not pressed."
+        # A pasted newline is just a line break in chat apps; a real key
+        # press sends the message.
+        if not self._press(keys):
+            return f"Windows blocked {name}, so the text was not sent."
+        return ""
 
     def prepare_text(self, text: str, settings: dict[str, Any]) -> str:
         value = " ".join(text.split()).strip()
@@ -798,11 +811,10 @@ class TextInserter:
         # Unicode key events arrive as typed characters (VK_PACKET), so games
         # do not read them as movement or hotkeys.
         events = (INPUT * 2)(
-            INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE, 0, 0))),
-            INPUT(
-                INPUT_KEYBOARD,
-                _INPUTUNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, 0)),
-            ),
+            *(
+                INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, flags, 0, REPLAY_MARKER)))
+                for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)
+            )
         )
         if user32.SendInput(2, events, ctypes.sizeof(INPUT)) != 2:
             raise TextInsertionError(
