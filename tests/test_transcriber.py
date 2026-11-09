@@ -324,6 +324,50 @@ def test_whisper_downloads_first_and_loads_its_folder_offline(monkeypatch, tmp_p
     assert events == [f"load {models / 'whisper-small'} offline=True"]
 
 
+def test_whisper_loads_without_pyav(monkeypatch) -> None:
+    # The installer build leaves PyAV out (68 MB, mostly FFmpeg): faster-whisper
+    # needs it only to decode files, and the app hands it samples.
+    from core import transcriber as transcriber_module
+
+    for name in [n for n in sys.modules if n == "av" or n.startswith(("av.", "faster_whisper"))]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "av", None)  # "import av" fails, as in that build
+    before = set(sys.modules)
+    try:
+        whisper_model, download_model = transcriber_module._faster_whisper()
+
+        assert whisper_model.__name__ == "WhisperModel" and callable(download_model)
+    finally:
+        for name in set(sys.modules) - before:  # the copy bound to the stand-in
+            if name.startswith(("av.", "faster_whisper")):
+                del sys.modules[name]
+
+
+def test_whisper_gets_samples_even_for_a_wav_path(monkeypatch, tmp_path) -> None:
+    # Without PyAV faster-whisper cannot open a file itself.
+    import wave
+
+    heard: list[object] = []
+
+    class ListeningWhisper(SpeakingWhisper):
+        def transcribe(self, audio, **kwargs):
+            heard.append(audio)
+            return super().transcribe(audio, **kwargs)
+
+    install_fake_whisper(monkeypatch, ListeningWhisper)
+    path = tmp_path / "clip.wav"
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes((SPEECH * 32767).astype(np.int16).tobytes())
+
+    text = Transcriber(FakeModelManager("small")).transcribe(str(path), make_settings(tmp_path, device="cpu"))
+
+    assert text == "hello"
+    assert isinstance(heard[0], np.ndarray) and heard[0].size == SPEECH.size
+
+
 def test_a_first_whisper_download_trusts_the_windows_certificate_store(monkeypatch, tmp_path) -> None:
     # Voz and FunASR downloads used the Windows store; Whisper's first download
     # failed where Python's own bundle lacks the PC's root certificate (AU-6).
@@ -654,7 +698,7 @@ def test_transcribe_retries_on_cpu_when_gpu_transcription_fails(
     monkeypatch.setattr(transcriber, "_looks_like_silence", lambda audio_path: False)
 
     text = transcriber.transcribe(
-        "clip.wav",
+        SPEECH,  # samples, as the app hands them over
         make_settings(
             tmp_path, device="gpu", use_gpu_if_available=True, fallback_to_cpu=True
         ),
@@ -696,7 +740,7 @@ def test_transcribe_unloads_whisper_when_set_to_unload_after_each_dictation(
     monkeypatch.setattr(transcriber, "_looks_like_silence", lambda audio_path: False)
 
     text = transcriber.transcribe(
-        "clip.wav", make_settings(tmp_path, device="cpu", unload_model_after="each")
+        SPEECH, make_settings(tmp_path, device="cpu", unload_model_after="each")
     )
 
     assert text == "hello"

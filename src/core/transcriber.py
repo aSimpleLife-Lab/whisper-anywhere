@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 import threading
+import types
 from typing import Any, Callable
 import wave
 
@@ -53,6 +54,25 @@ def _local_copy(download: Callable[..., str], repo: str, cache_dir: str, ready: 
         except FileNotFoundError:  # huggingface_hub: the cached copy was deleted
             pass
     return download(repo, cache_dir=cache_dir)
+
+
+def _faster_whisper() -> tuple[Any, Any]:
+    """faster-whisper's model class and its downloader.
+
+    Its audio module imports PyAV (68 MB, mostly FFmpeg) to decode files. The
+    app hands it samples, never files, so the installer build leaves PyAV out
+    and an empty stand-in satisfies that import.
+    """
+    try:
+        import av  # noqa: F401
+    except ImportError:
+        # ponytail: a stand-in is enough while Whisper only ever gets samples
+        # (see _transcribe_with_whisper); ship PyAV again if it must decode files.
+        sys.modules["av"] = types.ModuleType("av")
+    from faster_whisper import WhisperModel
+    from faster_whisper.utils import download_model
+
+    return WhisperModel, download_model
 
 
 def default_cpu_threads() -> int:
@@ -256,6 +276,10 @@ class Transcriber:
         if bool(settings.get("translate_to_english", False)):
             kwargs["task"] = "translate"
 
+        if not isinstance(audio, np.ndarray):  # a file: faster-whisper would need PyAV to open it
+            audio = read_wav(audio)
+            if audio is None:
+                raise TranscriptionError("The recording could not be read.")
         try:
             segments, _info = model.transcribe(audio, **kwargs)
             return " ".join(segment.text.strip() for segment in segments).strip()
@@ -334,8 +358,7 @@ class Transcriber:
 
     def _load_whisper_model(self, settings: dict[str, Any], model_name: str):
         try:
-            from faster_whisper import WhisperModel
-            from faster_whisper.utils import download_model
+            WhisperModel, download_model = _faster_whisper()
         except Exception as exc:
             raise TranscriptionError(
                 "The local Whisper engine is not installed. Reinstall Whisper Anywhere or rebuild the app with dependencies included."
@@ -567,9 +590,7 @@ class Transcriber:
         )
 
     def _load_cpu_fallback_model(self, settings: dict[str, Any], model_name: str):
-        from faster_whisper import WhisperModel
-        from faster_whisper.utils import download_model
-
+        WhisperModel, download_model = _faster_whisper()
         self._gpu_failed = True
         backend_name = self.model_manager.backend_model_name(model_name)
         model_path = str(Path(str(settings.get("model_path"))).expanduser())
