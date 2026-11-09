@@ -868,6 +868,107 @@ def test_tab_alone_is_refused_as_the_retype_shortcut(monkeypatch) -> None:
     assert "retype_shortcut" not in window.settings_manager
 
 
+# ------------------------------------------------------------- v0.2.8
+
+
+def test_a_problem_is_reported_for_the_tray_before_the_state_changes() -> None:
+    # Errors only showed inside the window, which sits hidden in the tray: a
+    # failed dictation gave the error sound and nothing else.
+    calls: list[tuple] = []
+    window = _window()
+    window.problem.emit = lambda heading, detail: calls.append(("problem", heading, detail))
+    window._refresh_visual_state = lambda: calls.append(("state",))
+
+    mw.MainWindow.set_status(window, "Error", "The app did not take the paste.")
+    mw.MainWindow.set_status(window, "Not typed", "The shortcut seemed stuck.")
+    mw.MainWindow.set_status(window, "Ready", "Done.")
+
+    assert calls == [
+        ("problem", "Dictation problem", "The app did not take the paste."),
+        ("state",),
+        ("problem", "Not typed", "The shortcut seemed stuck."),
+        ("state",),
+        ("state",),
+    ]
+
+
+def test_the_tray_is_told_about_the_error_state() -> None:
+    window = _window(
+        _is_listening=False,
+        _is_transcribing=False,
+        _is_preparing_model=False,
+        _status_is_error=True,
+        _last_state="busy",
+    )
+    window._visual_state = lambda: mw.MainWindow._visual_state(window)
+
+    mw.MainWindow._refresh_visual_state(window)
+
+    window.state_changed.emit.assert_called_once_with("error")
+
+
+def test_the_first_close_to_the_tray_says_the_app_is_still_running() -> None:
+    # The window vanished, and nothing said the shortcut still worked or how to quit.
+    settings = FakeSettings(minimize_to_tray=True)
+    window = _window(settings_manager=settings, _force_exit=False)
+    event = MagicMock()
+
+    mw.MainWindow.closeEvent(window, event)
+    mw.MainWindow.closeEvent(window, event)
+
+    assert event.ignore.call_count == 2
+    assert window.notice.emit.call_count == 1  # said once, ever
+    assert settings["tray_hint_shown"] is True
+
+
+def test_a_start_in_the_tray_loads_the_model_at_once() -> None:
+    # The 1.5 s wait keeps an opening window smooth; a hidden start has none to keep.
+    window = _window()
+
+    mw.MainWindow.warm_up_at_once(window)
+
+    window._warm_up_timer.stop.assert_called_once_with()
+    window.warm_up_selected_model.assert_called_once_with()
+
+
+def test_controls_that_do_nothing_for_the_selected_model_are_switched_off() -> None:
+    # With Voz selected, Auto/CPU/GPU and Whisper precision could be changed, and changed nothing.
+    expected = {"voz": (False, False), "whisper": (True, True), "funasr": (True, False)}
+    for engine, (hardware, precision) in expected.items():
+        window = _window()
+        window.model_manager.selected_info.return_value = SimpleNamespace(engine=engine, label="Model")
+
+        mw.MainWindow._show_what_applies(window)
+
+        window.device_segmented.setEnabled.assert_called_once_with(hardware)
+        window.compute_combo.setEnabled.assert_called_once_with(precision)
+
+
+def test_setup_asks_about_hardware_only_for_models_that_use_it() -> None:
+    # Voz always runs on the CPU: one question fewer on the first run.
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from core.model_manager import ModelManager
+
+    _app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
+    parent = QWidget()
+    parent.settings_manager = FakeSettings()
+    parent.model_manager = ModelManager(parent.settings_manager)
+    parent.audio_recorder = SimpleNamespace(
+        list_input_devices=lambda keep=None: [SimpleNamespace(id="default", name="Default system microphone")]
+    )
+    parent._resolve_saved_microphone = lambda: "default"
+    parent._select_combo_data = lambda combo, value: mw.MainWindow._select_combo_data(parent, combo, value)
+
+    dialog = mw.FirstRunSetupDialog(parent)
+
+    assert not dialog.form.isRowVisible(dialog.device_combo)
+    dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("small"))
+    assert dialog.form.isRowVisible(dialog.device_combo)
+    dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("voz"))
+    assert not dialog.form.isRowVisible(dialog.device_combo)
+
+
 def test_text_with_no_app_to_type_into_stays_in_last_transcription() -> None:
     # Dictating from the window's own button pasted into the window itself,
     # and Enter clicked its focused button.

@@ -114,7 +114,7 @@ PBT_APMRESUMEAUTOMATIC = 0x0012
 WM_WTSSESSION_CHANGE = 0x02B1
 WTS_SESSION_UNLOCK = 0x8
 NOTIFY_FOR_THIS_SESSION = 0
-ERROR_STATUSES = {"Error", "Hotkey error", "Start-up problem", "Shortcut problem", "Update check failed"}
+ERROR_STATUSES = {"Error", "Not typed", "Hotkey error", "Start-up problem", "Shortcut problem", "Update check failed"}
 SPEED_LEVELS = {"Fastest": 5, "Very fast": 5, "Fast": 4, "Balanced": 3, "Moderate": 2, "Slow": 1}
 ACCURACY_LEVELS = {
     "Highest": 5,
@@ -430,6 +430,9 @@ class FirstRunSetupDialog(ShellDialog):
         self.device_combo.addItem("GPU preferred", "gpu")
         parent._select_combo_data(self.device_combo, parent.settings_manager.get("device", "cpu"))
         form.addRow("Hardware", self.device_combo)
+        self.form = form
+        self.model_combo.currentIndexChanged.connect(self._show_hardware_row)
+        self._show_hardware_row()
         self.body.addLayout(form)
         self.body.addWidget(
             label(
@@ -449,6 +452,12 @@ class FirstRunSetupDialog(ShellDialog):
         row.addWidget(save)
         self.body.addSpacing(4)
         self.body.addLayout(row)
+
+    def _show_hardware_row(self, _index: int = 0) -> None:
+        """Voz always runs on the CPU: Hardware is asked only for a model that can use a GPU."""
+        name = str(self.model_combo.currentData() or "voz")
+        self.form.setRowVisible(self.device_combo, MODEL_INFO[name].engine != "voz")
+        self.adjustSize()
 
 
 class SettingsWindow(ShellDialog):
@@ -664,6 +673,8 @@ class MainWindow(QMainWindow):
     feedback_volume_changed = Signal(float)
     feedback = Signal(bool)  # start or stop cue: the microphone opened or closed
     state_changed = Signal(str)
+    problem = Signal(str, str)  # heading, what went wrong: for the tray, where the window usually is
+    notice = Signal(str, str)  # heading, text: a tray notification that is no problem
     level_changed = Signal(float)
     transcription_done = Signal(int, str, float, float)
     transcription_failed = Signal(int, str)
@@ -1049,9 +1060,8 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(14)
         layout.addWidget(CubeTitle("Performance", "columnTitle"))
-        layout.addWidget(
-            label("Mostly for Whisper and FunASR.", "muted", wrap=True)
-        )
+        self.performance_note = label("Mostly for Whisper and FunASR.", "muted", wrap=True)
+        layout.addWidget(self.performance_note)
         layout.addSpacing(10)
         self.device_segmented = Segmented([("Auto", "auto"), ("CPU", "cpu"), ("GPU", "gpu")])
         self.device_segmented.setToolTip("Where Whisper and FunASR run")
@@ -1437,8 +1447,21 @@ class MainWindow(QMainWindow):
                 self.model_status.setText(f"{info.label} is not downloaded yet.")
             if self.settings_manager.model_folder_error:  # a drive that is not there
                 self.model_status.setText(self.settings_manager.model_folder_error)
+        self._show_what_applies()
         self._sync_model_list()
         self.update_bottom_labels()
+
+    def _show_what_applies(self) -> None:
+        """Voz always runs on the CPU, and precision is Whisper's alone: with
+        another model selected, those controls changed nothing."""
+        engine = self.model_manager.selected_info().engine
+        self.device_segmented.setEnabled(engine != "voz")
+        self.compute_combo.setEnabled(engine == "whisper")
+        self.performance_note.setText(
+            "Voz always runs on the CPU. Hardware and precision are for the other models."
+            if engine == "voz"
+            else "Mostly for Whisper and FunASR."
+        )
 
     def _cancel_transcription_timer(self) -> None:
         if self._transcription_timer is not None:
@@ -1517,6 +1540,12 @@ class MainWindow(QMainWindow):
         self.warm_up_selected_model()
         self._refresh_model_status()
         self.set_status("Ready", "The speech engine was reset and is loading again.")
+
+    def warm_up_at_once(self) -> None:
+        """For a start in the tray: the usual wait keeps an opening window
+        smooth, and there is none."""
+        self._warm_up_timer.stop()
+        self.warm_up_selected_model()
 
     def warm_up_selected_model(self, while_listening: bool = False) -> None:
         """Load the installed model in the background so the first dictation is instant.
@@ -2701,6 +2730,9 @@ class MainWindow(QMainWindow):
         self.status_detail.setObjectName("error" if self._status_is_error else "muted")
         self.status_detail.style().unpolish(self.status_detail)
         self.status_detail.style().polish(self.status_detail)
+        if self._status_is_error:
+            # Before the state: the tray's red dot then already knows why.
+            self.problem.emit("Dictation problem" if status == "Error" else status, detail)
         self._refresh_visual_state()
 
     def _visual_state(self) -> str:
@@ -2720,10 +2752,9 @@ class MainWindow(QMainWindow):
         self.horizon.set_mode(state)
         self.listen_button.setText("Stop and type" if state == "listening" else "Start listening")
         self.listen_button.setEnabled(state != "busy")
-        tray_state = state if state in ("listening", "busy") else "idle"
-        if tray_state != self._last_state:
-            self._last_state = tray_state
-            self.state_changed.emit(tray_state)
+        if state != self._last_state:  # "error" too: the tray showed it as idle
+            self._last_state = state
+            self.state_changed.emit(state)
 
     def set_hotkey_status(self, message: str) -> None:
         self.hotkey_status_label.setText(message)
@@ -2775,6 +2806,13 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.settings_window.hide()
             self.hide()
+            if not self.settings_manager.get("tray_hint_shown", False):
+                # Once: the window just vanished, and nothing said the app goes on.
+                self.settings_manager.set("tray_hint_shown", True)
+                self.notice.emit(
+                    "Whisper Anywhere is still running",
+                    "The shortcut keeps working. To quit, right-click this icon and choose Exit.",
+                )
             return
         self.settings_window.close()
         self.audio_recorder.close()

@@ -145,6 +145,8 @@ def stylesheet() -> str:
     QPushButton#segment:checked {{ background: #EA8A2B; border-color: #EA8A2B; color: #140B03; }}
     QPushButton#segment:focus {{ border-color: #EA8A2B; }}
     QPushButton#segment:checked:focus {{ border-color: #FFE6CF; }}
+    QPushButton#segment:disabled {{ color: #5E5E5E; }}
+    QPushButton#segment:checked:disabled {{ background: #3A240F; border-color: #3A240F; color: #8C6A4A; }}
 
     QLineEdit, QPlainTextEdit {{ background: #000000; color: #F2F2F2; border: 1px solid #2B2B2B; border-radius: 6px;
         padding: 6px 8px; selection-background-color: #EA8A2B; selection-color: #140B03; }}

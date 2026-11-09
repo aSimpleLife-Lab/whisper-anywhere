@@ -6,6 +6,7 @@ import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import main
 from core import app_log
@@ -129,6 +130,82 @@ def test_openblas_is_held_to_one_thread_before_numpy_loads() -> None:
     )
 
     assert result.stdout.strip() == "['1']", result.stderr[-2000:]
+
+
+def test_cue_sounds_use_windows_own_audio_backend() -> None:
+    # Qt's default FFmpeg backend loaded five codec DLLs (19 MB of the build)
+    # to play four WAV cues. The installer build no longer ships them.
+    probe = (
+        "import os, sys, types\n"
+        "sys.modules['sounddevice'] = types.ModuleType('sounddevice')  # no PortAudio\n"
+        f"sys.path.insert(0, {str(Path(main.__file__).parent)!r})\n"
+        "import main\n"
+        "print(os.environ.get('QT_MEDIA_BACKEND'))\n"
+    )
+    env = {key: value for key, value in os.environ.items() if key != "QT_MEDIA_BACKEND"}
+    env["QT_QPA_PLATFORM"] = "offscreen"
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, env=env, timeout=120
+    )
+
+    assert result.stdout.strip() == "windows", result.stderr[-2000:]
+
+
+def _run_main(monkeypatch, minimized: bool) -> tuple[list[str], MagicMock]:
+    """main() with every part replaced: what it starts, and in which order."""
+    order: list[str] = []
+    saved = {"shortcut": "Ctrl+Alt+Q", "retype_shortcut": "", "debug_logs": False}
+    settings = MagicMock(load_notice="", model_folder_error="")
+    settings.get.side_effect = lambda key, default=None: saved.get(key, default)
+    helper = MagicMock()
+    helper.start.side_effect = lambda: order.append("helper started")
+    window = MagicMock()
+
+    def build_window(*parts) -> MagicMock:
+        order.append("window built")
+        return window
+
+    for name in (
+        "QApplication",
+        "StartupManager",
+        "ModelManager",
+        "AudioRecorder",
+        "Transcriber",
+        "TextInserter",
+        "FeedbackPlayer",
+        "TrayManager",
+        "QLocalServer",
+        "QTimer",
+        "app_icon",
+        "set_windows_app_id",
+    ):
+        monkeypatch.setattr(main, name, MagicMock())
+    monkeypatch.setattr(main, "another_copy_running", lambda: False)
+    monkeypatch.setattr(main, "should_start_minimized", lambda: minimized)
+    monkeypatch.setattr(main, "SettingsManager", lambda: settings)
+    monkeypatch.setattr(main.app_log, "destroy_legacy_files", lambda *args: None)  # never this PC's files
+    monkeypatch.setattr(main, "HotkeyHelper", lambda shortcut, mode: helper)
+    monkeypatch.setattr(main, "MainWindow", build_window)
+
+    main.main()
+    return order, window
+
+
+def test_the_shortcut_helper_starts_before_the_window_is_built(monkeypatch) -> None:
+    # The helper process takes about a second to boot. Started last, the
+    # shortcut came alive a second after everything else was ready.
+    order, _window = _run_main(monkeypatch, minimized=False)
+
+    assert order == ["helper started", "window built"]
+
+
+def test_a_start_in_the_tray_loads_the_model_without_the_wait(monkeypatch) -> None:
+    _order, hidden = _run_main(monkeypatch, minimized=True)
+    hidden.warm_up_at_once.assert_called_once_with()
+
+    _order, shown = _run_main(monkeypatch, minimized=False)
+    shown.warm_up_at_once.assert_not_called()  # an opening window stays smooth first
 
 
 def test_a_retype_shortcut_equal_to_the_dictation_shortcut_turns_off() -> None:

@@ -6,6 +6,10 @@ import os
 # Before anything imports numpy: its OpenBLAS starts a thread per core and
 # commits their buffers (23 idle threads, 747 MB); the engines use their own.
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+# Before Qt Multimedia loads: its default FFmpeg backend brings five codec
+# DLLs (19 MB) to play four WAV cues. Windows' own plays them the same, and
+# the installer build ships no FFmpeg.
+os.environ.setdefault("QT_MEDIA_BACKEND", "windows")
 
 import sys
 
@@ -155,6 +159,12 @@ def main() -> int:
     if settings_manager.get("debug_logs", False):
         app_log.write_to_disk(settings_manager.debug_log_path)
     app_log.log(f"Whisper Anywhere {APP_VERSION} starting")
+    # The keyboard and mouse hooks run in a helper process: a model load
+    # holding this one's GIL for seconds can't hold back the PC's input. It
+    # starts first because it takes a second to boot: started last, the
+    # shortcut came alive a second after everything else was ready.
+    hotkey = HotkeyHelper(shortcut, str(settings_manager.get("shortcut_mode", "hold")))
+    hotkey.start()
     startup_manager = StartupManager()
     startup_state = start_up_step(
         problems,
@@ -181,12 +191,7 @@ def main() -> int:
         text_inserter,
         startup_manager,
     )
-    if problems:
-        window.set_status("Start-up problem", " ".join(problems))
     tray = TrayManager(model_manager)
-    # The keyboard and mouse hooks run in a helper process: a model load
-    # holding this one's GIL for seconds can't hold back the PC's input.
-    hotkey = HotkeyHelper(shortcut, str(settings_manager.get("shortcut_mode", "hold")))
 
     hotkey.pressed.connect(window.shortcut_pressed)
     hotkey.released.connect(window.stop_listening_and_transcribe)
@@ -227,6 +232,11 @@ def main() -> int:
     tray.model_selected.connect(window.select_model)
     window.model_changed.connect(tray.set_current_model)
     window.state_changed.connect(tray.set_state)
+    # The window is usually hidden in the tray: problems show there too.
+    window.problem.connect(tray.show_problem)
+    window.notice.connect(tray.show_message)
+    tray.dictation_toggled.connect(window.dictation_toggle.switch.setChecked)
+    window.hotkey_enabled_changed.connect(tray.set_dictation)
 
     def shutdown() -> None:
         hotkey.stop()
@@ -250,11 +260,13 @@ def main() -> int:
     show_server.listen(SHOW_SERVER)
 
     tray.show()
-    hotkey.start()
+    if problems:  # after the tray is up: a start in the tray says so there
+        window.set_status("Start-up problem", " ".join(problems))
     if start_minimized:
         window.hide()
         QTimer.singleShot(0, window.hide)
         QTimer.singleShot(1000, window.hide)
+        window.warm_up_at_once()  # no window to keep smooth while the model loads
     else:
         window.show()
 
