@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -178,12 +180,25 @@ MODEL_ALIASES = {
 LARGE_MODELS = {"large-v2", "large-v3", "funasr-nano"}
 
 
+@functools.cache
+def engine_installed(engine: str) -> bool:
+    """FunASR is an optional install that the installer build leaves out.
+    Its models could be picked there, and then only failed."""
+    return engine != "funasr" or importlib.util.find_spec("funasr") is not None
+
+
 class ModelManager:
     def __init__(self, settings_manager: SettingsManager) -> None:
         self.settings_manager = settings_manager
 
     def models(self) -> list[SpeechModelInfo]:
-        return [MODEL_INFO[name] for name in MODEL_ORDER]
+        """The models this copy can run, and the selected one whatever it is."""
+        selected = self.selected_model()
+        return [
+            MODEL_INFO[name]
+            for name in MODEL_ORDER
+            if name == selected or engine_installed(MODEL_INFO[name].engine)
+        ]
 
     def normalize_model_name(self, model_name: str) -> str:
         return MODEL_ALIASES.get(model_name, model_name)
