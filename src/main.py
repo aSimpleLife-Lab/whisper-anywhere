@@ -11,7 +11,14 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 # the installer build ships no FFmpeg.
 os.environ.setdefault("QT_MEDIA_BACKEND", "windows")
 
+import platform
 import sys
+
+# Python 3.11's platform.win32_ver() runs "cmd /c ver" for the Windows build
+# number, and sounddevice asks for platform.system() as it is imported: a
+# child process at every start, 0.1 s, from an app without a console. Given
+# no answer, platform uses sys.getwindowsversion() instead, which is enough.
+platform._syscmd_ver = lambda *args, **kwargs: ("", "", "")
 
 from core.hotkey_helper import HELPER_FLAG, HotkeyHelper, run_helper
 
