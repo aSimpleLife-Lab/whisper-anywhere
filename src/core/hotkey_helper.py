@@ -129,7 +129,10 @@ class HotkeyHelper(QObject):
         process.finished.connect(lambda: self._exited(process))
         process.start(self._command[0], self._command[1:])
         if not process.waitForStarted(10000):
-            self.error.emit(f"Could not start the global shortcut. {process.errorString()}")
+            # From the event loop: main() starts the helper before the window
+            # that shows this error exists.
+            message = f"Could not start the global shortcut. {process.errorString()}"
+            QTimer.singleShot(0, lambda: self.error.emit(message))
             process.deleteLater()
             return
         self._process, self._started_at = process, time.monotonic()

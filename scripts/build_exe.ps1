@@ -28,11 +28,19 @@ $DistPath = "dist"
 if ($Lite) {
     $DistPath = "dist-lite"
     $OptionalPyInstallerArgs += @("--distpath", $DistPath, "--workpath", "build-lite")
-    foreach ($Package in @("funasr", "torch", "torchaudio", "modelscope", "transformers")) {
+    # FunASR and PyTorch, and what only they or other packages' tools and tests
+    # import: the app never loads any of it. PyAV (FFmpeg) only decodes files,
+    # and Whisper gets samples (see _faster_whisper in transcriber.py).
+    foreach ($Package in @(
+        "funasr", "torch", "torchaudio", "modelscope", "transformers",
+        "av", "numba", "llvmlite", "scipy", "sympy", "mpmath", "pytest", "_pytest",
+        "PIL", "tensorboardX", "soundfile", "cryptography", "win32ui"
+    )) {
         $OptionalPyInstallerArgs += "--exclude-module"
         $OptionalPyInstallerArgs += $Package
     }
 } else {
+    $OptionalPyInstallerArgs += @("--collect-all", "av")  # FunASR decodes files
     # find_spec prints nothing: under Windows PowerShell 5.1 a failed import's
     # redirected traceback was a terminating error.
     & $Python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('funasr') is None)"
@@ -55,6 +63,9 @@ if (!$Lite -and $LASTEXITCODE -eq 0) {
 }
 
 Write-Host "Building Whisper Anywhere.exe..."
+# ONNX Runtime and onnx are found from the app's own imports. Collecting all
+# of them took their tools and tests along, and with those numba, llvmlite,
+# sympy, scipy, pytest and Pillow: about 190 MB the app never imports.
 & $Python -m PyInstaller `
     --noconfirm `
     --clean `
@@ -68,10 +79,7 @@ Write-Host "Building Whisper Anywhere.exe..."
     --add-data "assets\sounds;assets\sounds" `
     --collect-all faster_whisper `
     --collect-all ctranslate2 `
-    --collect-all onnxruntime `
-    --collect-all onnx `
     --collect-all truststore `
-    --collect-all av `
     --collect-all sounddevice `
     --collect-all PySide6.QtMultimedia `
     $OptionalPyInstallerArgs `
@@ -83,6 +91,34 @@ Write-Host "Building Whisper Anywhere.exe..."
 # Without this a failed build still said complete, and the installer packaged
 # the previous dist-lite under the new version number.
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
+
+# Qt files that a widgets app playing four WAV cues never loads (from the
+# DLLs' import tables, 2026-11-09): software OpenGL; the on-screen keyboard,
+# the only user of Quick, QML and Qt's OpenGL; the PDF image plugin; the FFmpeg
+# media backend (main.py picks Windows' own); translations of Qt's own dialogs.
+$Bundle = Join-Path $Root "$DistPath\Whisper Anywhere"
+foreach ($Unused in @(
+    "PySide6\opengl32sw.dll",
+    "PySide6\plugins\platforminputcontexts",
+    "PySide6\Qt6VirtualKeyboard.dll",
+    "PySide6\Qt6Quick.dll",
+    "PySide6\Qt6Qml*.dll",
+    "PySide6\Qt6OpenGL.dll",
+    "PySide6\plugins\imageformats\qpdf.dll",
+    "PySide6\Qt6Pdf.dll",
+    "PySide6\plugins\multimedia\ffmpegmediaplugin.dll",
+    "PySide6\avcodec-*.dll",
+    "PySide6\avformat-*.dll",
+    "PySide6\avutil-*.dll",
+    "PySide6\swscale-*.dll",
+    "PySide6\swresample-*.dll",
+    "PySide6\translations"
+)) {
+    Get-Item (Join-Path $Bundle "_internal\$Unused") -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+}
+# A file left behind that needs one of those would fail only on a user's PC.
+& $Python (Join-Path $PSScriptRoot "check_bundle.py") $Bundle
+if ($LASTEXITCODE -ne 0) { throw "The bundle check failed with exit code $LASTEXITCODE" }
 
 Write-Host ""
 Write-Host "Build complete: $DistPath\Whisper Anywhere\Whisper Anywhere.exe"

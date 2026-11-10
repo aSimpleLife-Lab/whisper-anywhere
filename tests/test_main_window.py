@@ -642,7 +642,7 @@ def _flow_window(**overrides) -> SimpleNamespace:
         _is_transcribing=False,
         _is_preparing_model=False,
         _start_cue_played=False,
-        _error_cue_pending=False,
+        _pending_error="",
         _target_hwnd=None,
         _insert_cancel=None,
         _active_insert_id=0,
@@ -868,6 +868,115 @@ def test_tab_alone_is_refused_as_the_retype_shortcut(monkeypatch) -> None:
     assert "retype_shortcut" not in window.settings_manager
 
 
+# ------------------------------------------------------------- v0.2.8
+
+
+def test_a_problem_is_reported_for_the_tray_before_the_state_changes() -> None:
+    # Errors only showed inside the window, which sits hidden in the tray: a
+    # failed dictation gave the error sound and nothing else.
+    calls: list[tuple] = []
+    window = _window()
+    window.problem.emit = lambda heading, detail: calls.append(("problem", heading, detail))
+    window._refresh_visual_state = lambda: calls.append(("state",))
+
+    mw.MainWindow.set_status(window, "Error", "The app did not take the paste.")
+    mw.MainWindow.set_status(window, "Not typed", "The shortcut seemed stuck.")
+    mw.MainWindow.set_status(window, "Ready", "Done.")
+
+    assert calls == [
+        ("problem", "", "The app did not take the paste."),  # a plain error has no heading of its own
+        ("state",),
+        ("problem", "Not typed", "The shortcut seemed stuck."),
+        ("state",),
+        ("state",),
+    ]
+
+
+def test_the_tray_is_told_about_the_error_state() -> None:
+    window = _window(
+        _is_listening=False,
+        _is_transcribing=False,
+        _is_preparing_model=False,
+        _status_is_error=True,
+        _last_state="busy",
+    )
+    window._visual_state = lambda: mw.MainWindow._visual_state(window)
+
+    mw.MainWindow._refresh_visual_state(window)
+
+    window.state_changed.emit.assert_called_once_with("error")
+
+
+def test_the_first_close_to_the_tray_says_the_app_is_still_running() -> None:
+    # The window vanished, and nothing said the shortcut still worked or how to quit.
+    settings = FakeSettings(minimize_to_tray=True)
+    window = _window(settings_manager=settings, _force_exit=False)
+    event = MagicMock()
+
+    mw.MainWindow.closeEvent(window, event)
+    mw.MainWindow.closeEvent(window, event)
+
+    assert event.ignore.call_count == 2
+    assert window.notice.emit.call_count == 1  # said once, ever
+    assert settings["tray_hint_shown"] is True
+
+
+def test_a_start_in_the_tray_loads_the_model_at_once() -> None:
+    # The 1.5 s wait keeps an opening window smooth; a hidden start has none to keep.
+    window = _window()
+
+    mw.MainWindow.warm_up_at_once(window)
+
+    window._warm_up_timer.stop.assert_called_once_with()
+    window.warm_up_selected_model.assert_called_once_with()
+
+
+def test_controls_that_do_nothing_for_the_selected_model_are_switched_off() -> None:
+    # With Voz selected, Auto/CPU/GPU and Whisper precision could be changed, and changed nothing.
+    expected = {"voz": (False, False), "whisper": (True, True), "funasr": (True, False)}
+    for engine, (hardware, precision) in expected.items():
+        window = _window()
+        window.model_manager.selected_info.return_value = SimpleNamespace(engine=engine, label="Model")
+
+        mw.MainWindow._show_what_applies(window)
+
+        window.device_segmented.setEnabled.assert_called_once_with(hardware)
+        window.compute_combo.setEnabled.assert_called_once_with(precision)
+
+
+def test_setup_asks_about_hardware_only_for_models_that_use_it() -> None:
+    # Voz always runs on the CPU: one question fewer on the first run.
+    from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+
+    from core.model_manager import ModelManager
+
+    _app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
+    parent = QWidget()
+    parent.settings_manager = FakeSettings()
+    parent.model_manager = ModelManager(parent.settings_manager)
+    parent.audio_recorder = SimpleNamespace(
+        list_input_devices=lambda keep=None: [SimpleNamespace(id="default", name="Default system microphone")]
+    )
+    parent._resolve_saved_microphone = lambda: "default"
+    parent._select_combo_data = lambda combo, value: mw.MainWindow._select_combo_data(parent, combo, value)
+
+    dialog = mw.FirstRunSetupDialog(parent)
+
+    def scrolls() -> bool:  # part of the dialog is cut off
+        QApplication.processEvents()
+        return any(area.verticalScrollBar().maximum() > 0 for area in dialog.findChildren(QScrollArea))
+
+    assert not dialog.form.isRowVisible(dialog.device_combo)
+    dialog.show()
+    assert not scrolls()  # sized for everything in it, the buttons too
+    dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("small"))
+    assert dialog.form.isRowVisible(dialog.device_combo)
+    assert not scrolls()  # and it grows with the extra row
+    dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("voz"))
+    assert not dialog.form.isRowVisible(dialog.device_combo)
+    dialog.close()
+
+
 def test_text_with_no_app_to_type_into_stays_in_last_transcription() -> None:
     # Dictating from the window's own button pasted into the window itself,
     # and Enter clicked its focused button.
@@ -903,3 +1012,89 @@ def test_adding_and_removing_an_app_profile_saves_it() -> None:
     assert list(settings["app_profiles"]) == ["game.exe"]
     mw.MainWindow.remove_app_profile(window, "game.exe")
     assert settings["app_profiles"] == {}
+
+
+def test_a_tap_with_no_microphone_shows_no_error_and_a_hold_shows_it_with_its_sound() -> None:
+    # Errors now reach the tray, so a plain Back click with the headset off
+    # raised a notification. Like the error sound, the message waits until
+    # the press turns out to be a hold.
+    def no_microphone(*args, **kwargs) -> None:
+        raise mw.AudioRecorderError("Could not start the microphone.")
+
+    said: list[tuple[str, str]] = []
+    tapped = _flow_window(set_status=lambda status, detail: said.append((status, detail)))
+    tapped.audio_recorder.start = no_microphone
+    mw.MainWindow.start_listening(tapped, from_shortcut=True)
+    assert said == []  # the press alone says nothing yet
+    mw.MainWindow.drop_tapped_recording(tapped)
+    assert said == [] and tapped.cue.calls == []  # a click: nothing was wrong
+
+    held = _flow_window(set_status=lambda status, detail: said.append((status, detail)))
+    held.audio_recorder.start = no_microphone
+    mw.MainWindow.start_listening(held, from_shortcut=True)
+    held._play_delayed_start_cue()  # TAP_SECONDS later, still held
+    assert said == [("Error", "Could not start the microphone.")]
+    assert held.cue.calls == [("error",)]
+
+
+def test_setup_opens_no_stray_windows_for_a_whisper_model() -> None:
+    # The Hardware row was shown before the form was in the dialog, so Qt
+    # showed its label and its box as two windows of their own for an instant.
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from core.model_manager import ModelManager
+
+    app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
+    parent = QWidget()
+    parent.settings_manager = FakeSettings(selected_model="small")
+    parent.model_manager = ModelManager(parent.settings_manager)
+    parent.audio_recorder = SimpleNamespace(
+        list_input_devices=lambda keep=None: [SimpleNamespace(id="default", name="Default system microphone")]
+    )
+    parent._resolve_saved_microphone = lambda: "default"
+    parent._select_combo_data = lambda combo, value: mw.MainWindow._select_combo_data(parent, combo, value)
+    shown: list[str] = []
+
+    class Watch(QObject):
+        def eventFilter(self, watched, event) -> bool:
+            if event.type() == QEvent.Type.Show and isinstance(watched, QWidget) and watched.isWindow():
+                shown.append(type(watched).__name__)
+            return False
+
+    watch = Watch()
+    app.installEventFilter(watch)
+    try:
+        dialog = mw.FirstRunSetupDialog(parent)
+    finally:
+        app.removeEventFilter(watch)
+
+    assert shown == []
+    assert dialog.form.isRowVisible(dialog.device_combo)  # a Whisper model can use a GPU
+
+
+def test_an_imported_model_this_copy_cannot_run_is_left_out(monkeypatch, tmp_path) -> None:
+    # Settings exported from a build with FunASR: the list here does not even
+    # show SenseVoice, so importing it left nothing selected in the list.
+    monkeypatch.setattr(mw, "show_message", lambda parent, title, text, *args: None)
+    monkeypatch.setattr(mw, "engine_installed", lambda engine: engine != "funasr")
+    exported = tmp_path / "settings.json"
+    exported.write_text('{"selected_model": "sensevoice-small", "shortcut_mode": "toggle"}', encoding="utf-8")
+    monkeypatch.setattr(mw.QFileDialog, "getOpenFileName", lambda *args: (str(exported), ""))
+
+    class ImportingSettings(FakeSettings):
+        debug_log_path = tmp_path / "debug.log"
+
+        def import_portable(self, values):
+            self.update(values)
+            return []
+
+    window = MagicMock()
+    window.settings_manager = ImportingSettings(selected_model="voz")
+    window.model_manager.normalize_model_name = lambda name: name
+
+    mw.MainWindow.import_settings(window)
+
+    assert window.settings_manager["selected_model"] == "voz"
+    assert window.settings_manager["shortcut_mode"] == "toggle"  # the rest still counts
+    assert "selected_model" in window.set_status.call_args[0][1]  # and the status says what was left out

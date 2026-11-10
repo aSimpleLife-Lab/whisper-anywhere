@@ -33,6 +33,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": 3,
     "first_run_setup_completed": False,
     "tutorial_seen": False,
+    "tray_hint_shown": False,  # the first close to the tray says the app is still running
     "selected_model": "voz",
     "microphone_device": "default",
     "microphone_name": "",

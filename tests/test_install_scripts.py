@@ -28,6 +28,69 @@ def test_the_cpu_torch_is_pinned_like_the_cuda_one() -> None:
     assert "install --upgrade torch torchaudio" not in script
 
 
+def test_the_build_collects_only_what_the_app_imports() -> None:
+    # --collect-all onnxruntime and onnx took their tools and tests along, and
+    # with those numba, llvmlite, sympy, scipy, pytest and Pillow: about
+    # 190 MB of a 599 MB app that it never imports.
+    script = (ROOT / "scripts" / "build_exe.ps1").read_text(encoding="utf-8")
+
+    assert not re.search(r"--collect-all onnx(runtime)?\b", script)
+    assert "check_bundle.py" in script  # and what the build deletes is checked
+
+
+def test_the_bundle_check_names_a_dll_whose_dependency_is_gone(tmp_path) -> None:
+    # The build deletes Qt files the app never loads. A plugin left behind that
+    # needs one of them would fail only on a user's PC.
+    import shutil
+    import subprocess
+    import sys
+
+    import PySide6
+
+    check = [sys.executable, str(ROOT / "scripts" / "check_bundle.py"), str(tmp_path)]
+    assert subprocess.run(check, capture_output=True, text=True).returncode == 0  # nothing there, nothing missing
+
+    shutil.copy(Path(PySide6.__file__).parent / "plugins" / "imageformats" / "qpdf.dll", tmp_path)
+    result = subprocess.run(check, capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert "qpdf.dll needs qt6pdf.dll" in result.stdout
+
+
+def test_the_bundle_check_lets_numbas_optional_tbb_layer_be(tmp_path) -> None:
+    # The full build has FunASR's numba, whose TBB threading layer imports a
+    # tbb12.dll that nothing ships. numba picks another layer without it, so
+    # the check must not fail every full build over it.
+    import importlib.util
+    import shutil
+    import subprocess
+    import sys
+
+    import pytest
+
+    numba = importlib.util.find_spec("numba")
+    if numba is None:
+        pytest.skip("numba is not installed here")
+    pool = next(Path(numba.origin).parent.glob("np/ufunc/tbbpool*.pyd"))
+    shutil.copy(pool, tmp_path)
+
+    check = [sys.executable, str(ROOT / "scripts" / "check_bundle.py"), str(tmp_path)]
+    result = subprocess.run(check, capture_output=True, text=True)
+
+    assert "tbbpool" in result.stdout  # it still names what else that file needs
+    assert "tbb12.dll" not in result.stdout
+
+
+def test_an_update_removes_what_the_new_version_no_longer_ships() -> None:
+    # Inno Setup only adds and overwrites. v0.2.8 dropped 375 MB of files from
+    # the app folder, which an update over v0.2.7 would have left behind.
+    iss = (ROOT / "installer" / "WhisperAnywhere.iss").read_text(encoding="utf-8")
+
+    assert "[InstallDelete]" in iss
+    section = iss.split("[InstallDelete]", 1)[1].split("[Icons]", 1)[0]
+    assert 'Type: filesandordirs; Name: "{app}' + chr(92) + '_internal"' in section
+
+
 def test_uninstall_removes_start_with_windows_only_when_it_starts_this_install() -> None:
     # PL-2: uninstall deleted the Run value whichever copy it started.
     iss = (ROOT / "installer" / "WhisperAnywhere.iss").read_text(encoding="utf-8")

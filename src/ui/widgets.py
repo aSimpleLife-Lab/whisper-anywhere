@@ -145,6 +145,8 @@ def stylesheet() -> str:
     QPushButton#segment:checked {{ background: #EA8A2B; border-color: #EA8A2B; color: #140B03; }}
     QPushButton#segment:focus {{ border-color: #EA8A2B; }}
     QPushButton#segment:checked:focus {{ border-color: #FFE6CF; }}
+    QPushButton#segment:disabled {{ color: #5E5E5E; }}
+    QPushButton#segment:checked:disabled {{ background: #3A240F; border-color: #3A240F; color: #8C6A4A; }}
 
     QLineEdit, QPlainTextEdit {{ background: #000000; color: #F2F2F2; border: 1px solid #2B2B2B; border-radius: 6px;
         padding: 6px 8px; selection-background-color: #EA8A2B; selection-color: #140B03; }}
@@ -503,6 +505,13 @@ class ShellDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.viewport().setAutoFillBackground(False)
         outer.addWidget(scroll, 1)
+        self._scroll = scroll
+
+    def fit_content(self) -> None:
+        """Resize to the content after it changed while the dialog is shown.
+        Qt does not ask a scroll area for its size hint again by itself."""
+        self._scroll.updateGeometry()
+        self.adjustSize()
 
     def showEvent(self, event) -> None:
         # Never taller than the screen: past that the body scrolls instead of squeezing.

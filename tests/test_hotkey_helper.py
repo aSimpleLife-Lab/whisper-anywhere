@@ -181,6 +181,18 @@ def test_a_helper_that_dies_mid_hold_ends_the_hold_and_comes_back(app, tmp_path,
     hotkey.stop()
 
 
+def test_a_helper_that_cannot_start_says_so_once_the_app_listens(app, tmp_path) -> None:
+    # main() starts the helper before the window exists, because it takes a
+    # second to boot: an error emitted inside start() had no listener yet.
+    hotkey = HotkeyHelper("Ctrl+Alt+F12", "hold", command=[str(tmp_path / "missing.exe")])
+
+    hotkey.start()
+    seen = recorder(hotkey)  # connected after the start, as main() does
+
+    wait_until(lambda: any(item.startswith("error: Could not start the global shortcut.") for item in seen))
+    hotkey.stop()
+
+
 def test_a_helper_that_keeps_dying_is_reported_instead_of_restarted(app, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(helper_module, "RESTART_AFTER_SECONDS", 60.0)
     launches = tmp_path / "launches"

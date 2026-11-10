@@ -53,7 +53,7 @@ from core.hotkey_listener import (
     shortcut_problem,
     shortcut_warning,
 )
-from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager
+from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager, engine_installed
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager, StartupManagerError
 from core.text_inserter import (
@@ -114,7 +114,7 @@ PBT_APMRESUMEAUTOMATIC = 0x0012
 WM_WTSSESSION_CHANGE = 0x02B1
 WTS_SESSION_UNLOCK = 0x8
 NOTIFY_FOR_THIS_SESSION = 0
-ERROR_STATUSES = {"Error", "Hotkey error", "Start-up problem", "Shortcut problem", "Update check failed"}
+ERROR_STATUSES = {"Error", "Not typed", "Hotkey error", "Start-up problem", "Shortcut problem", "Update check failed"}
 SPEED_LEVELS = {"Fastest": 5, "Very fast": 5, "Fast": 4, "Balanced": 3, "Moderate": 2, "Slow": 1}
 ACCURACY_LEVELS = {
     "Highest": 5,
@@ -321,8 +321,9 @@ def _tutorial_pages(shortcut: str, retype: str = "Ctrl+Alt+V") -> list[tuple[str
             "Watch it listen",
             "While you speak, the voxel columns rise with your voice and the wheel counts the seconds. The "
             "cyan scanner means your words are being turned into text, usually in well under a second.\n\n"
-            "The tray icon gets an orange dot while it listens and a cyan dot while it works. The Dictation on "
-            "switch pauses the shortcut.",
+            "The tray icon gets an orange dot while it listens, a cyan dot while it works and a red dot when "
+            "something went wrong: point at it to read why. The Dictation on switch, here and in the tray "
+            "menu, pauses the shortcut.",
         ),
         (
             "Speech models",
@@ -430,7 +431,12 @@ class FirstRunSetupDialog(ShellDialog):
         self.device_combo.addItem("GPU preferred", "gpu")
         parent._select_combo_data(self.device_combo, parent.settings_manager.get("device", "cpu"))
         form.addRow("Hardware", self.device_combo)
+        self.form = form
         self.body.addLayout(form)
+        # After the form is in the dialog: showing a row of a form that has no
+        # window yet makes Qt show its label and box as windows of their own.
+        self.model_combo.currentIndexChanged.connect(self._show_hardware_row)
+        self._show_hardware_row()
         self.body.addWidget(
             label(
                 f"Voz is recommended: the fastest and most accurate model here for 25 European "
@@ -449,6 +455,13 @@ class FirstRunSetupDialog(ShellDialog):
         row.addWidget(save)
         self.body.addSpacing(4)
         self.body.addLayout(row)
+
+    def _show_hardware_row(self, _index: int = 0) -> None:
+        """Voz always runs on the CPU: Hardware is asked only for a model that can use a GPU."""
+        name = str(self.model_combo.currentData() or "voz")
+        self.form.setRowVisible(self.device_combo, MODEL_INFO[name].engine != "voz")
+        if self.isVisible():  # before the first show, Qt sizes it for all that is in it
+            self.fit_content()
 
 
 class SettingsWindow(ShellDialog):
@@ -664,6 +677,8 @@ class MainWindow(QMainWindow):
     feedback_volume_changed = Signal(float)
     feedback = Signal(bool)  # start or stop cue: the microphone opened or closed
     state_changed = Signal(str)
+    problem = Signal(str, str)  # heading, what went wrong: for the tray, where the window usually is
+    notice = Signal(str, str)  # heading, text: a tray notification that is no problem
     level_changed = Signal(float)
     transcription_done = Signal(int, str, float, float)
     transcription_failed = Signal(int, str)
@@ -729,7 +744,7 @@ class MainWindow(QMainWindow):
         self._undelivered_reason = ""
         self._transcribing_model = ""
         self._start_cue_played = False
-        self._error_cue_pending = False
+        self._pending_error = ""  # a mouse press that found no microphone: shown once it is a hold
         self._load_ahead = False  # this dictation loads Voz while it records
         self._insert_id = 0
         self._active_insert_id = 0
@@ -1049,9 +1064,8 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(14)
         layout.addWidget(CubeTitle("Performance", "columnTitle"))
-        layout.addWidget(
-            label("Mostly for Whisper and FunASR.", "muted", wrap=True)
-        )
+        self.performance_note = label("Mostly for Whisper and FunASR.", "muted", wrap=True)
+        layout.addWidget(self.performance_note)
         layout.addSpacing(10)
         self.device_segmented = Segmented([("Auto", "auto"), ("CPU", "cpu"), ("GPU", "gpu")])
         self.device_segmented.setToolTip("Where Whisper and FunASR run")
@@ -1437,8 +1451,21 @@ class MainWindow(QMainWindow):
                 self.model_status.setText(f"{info.label} is not downloaded yet.")
             if self.settings_manager.model_folder_error:  # a drive that is not there
                 self.model_status.setText(self.settings_manager.model_folder_error)
+        self._show_what_applies()
         self._sync_model_list()
         self.update_bottom_labels()
+
+    def _show_what_applies(self) -> None:
+        """Voz always runs on the CPU, and precision is Whisper's alone: with
+        another model selected, those controls changed nothing."""
+        engine = self.model_manager.selected_info().engine
+        self.device_segmented.setEnabled(engine != "voz")
+        self.compute_combo.setEnabled(engine == "whisper")
+        self.performance_note.setText(
+            "Voz always runs on the CPU. Hardware and precision are for the other models."
+            if engine == "voz"
+            else "Mostly for Whisper and FunASR."
+        )
 
     def _cancel_transcription_timer(self) -> None:
         if self._transcription_timer is not None:
@@ -1517,6 +1544,12 @@ class MainWindow(QMainWindow):
         self.warm_up_selected_model()
         self._refresh_model_status()
         self.set_status("Ready", "The speech engine was reset and is loading again.")
+
+    def warm_up_at_once(self) -> None:
+        """For a start in the tray: the usual wait keeps an opening window
+        smooth, and there is none."""
+        self._warm_up_timer.stop()
+        self.warm_up_selected_model()
 
     def warm_up_selected_model(self, while_listening: bool = False) -> None:
         """Load the installed model in the background so the first dictation is instant.
@@ -1790,8 +1823,9 @@ class MainWindow(QMainWindow):
             self.feedback.emit(True)
             if self._load_ahead:
                 self.warm_up_selected_model(while_listening=True)
-        elif self._error_cue_pending:  # the microphone did not open
-            self._error_cue_pending = False
+        elif self._pending_error:  # the microphone did not open
+            message, self._pending_error = self._pending_error, ""
+            self.set_status("Error", message)
             self.cue.emit("error")
 
     def _mouse_hold_shortcut(self) -> bool:
@@ -1863,11 +1897,13 @@ class MainWindow(QMainWindow):
                 )
             except AudioRecorderError as exc:
                 self._append_activity_log("microphone start failed")
-                self.set_status("Error", _error_text(exc))
                 if from_shortcut and self._mouse_hold_shortcut():
-                    self._error_cue_pending = True  # a tap stays a click: only a hold hears it
+                    # A tap stays a click: only a hold sees and hears the error.
+                    # Shown at once, a plain click raised a tray notification.
+                    self._pending_error = _error_text(exc)
                     self._cue_timer.start()
                 else:
+                    self.set_status("Error", _error_text(exc))
                     self.cue.emit("error")
                 return
         self._append_activity_log("listening")
@@ -1958,7 +1994,7 @@ class MainWindow(QMainWindow):
         """A short tap of a mouse shortcut stays a normal click: the recording
         it opened goes away without a sound."""
         self._cue_timer.stop()
-        self._error_cue_pending = False
+        self._pending_error = ""
         if not self._is_listening:
             return
         self._set_listening(False)
@@ -2630,7 +2666,15 @@ class MainWindow(QMainWindow):
                 unusable = parse_shortcut(retype).mouse_trigger or shortcut_problem(retype, retype=True)
                 if unusable or same_shortcut(retype, dictation):
                     raise ValueError(f"the retype shortcut {retype} can't be used")
-            ignored = self.settings_manager.import_portable(values)
+            left_out: list[str] = []
+            if isinstance(values, dict) and "selected_model" in values:
+                # A model whose engine this copy lacks (SenseVoice from a build
+                # with FunASR): the list here does not show it, so it stays out.
+                model = self.model_manager.normalize_model_name(str(values["selected_model"]))
+                if model in MODEL_INFO and not engine_installed(MODEL_INFO[model].engine):
+                    values = {key: value for key, value in values.items() if key != "selected_model"}
+                    left_out.append("selected_model (its speech engine is not installed here)")
+            ignored = left_out + self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
             show_message(self, "Settings import failed", f"Could not import settings: {exc}")
             return
@@ -2701,6 +2745,10 @@ class MainWindow(QMainWindow):
         self.status_detail.setObjectName("error" if self._status_is_error else "muted")
         self.status_detail.style().unpolish(self.status_detail)
         self.status_detail.style().polish(self.status_detail)
+        if self._status_is_error:
+            # Before the state: the tray's red dot then already knows why. A
+            # plain error has no heading of its own.
+            self.problem.emit("" if status == "Error" else status, detail)
         self._refresh_visual_state()
 
     def _visual_state(self) -> str:
@@ -2720,10 +2768,9 @@ class MainWindow(QMainWindow):
         self.horizon.set_mode(state)
         self.listen_button.setText("Stop and type" if state == "listening" else "Start listening")
         self.listen_button.setEnabled(state != "busy")
-        tray_state = state if state in ("listening", "busy") else "idle"
-        if tray_state != self._last_state:
-            self._last_state = tray_state
-            self.state_changed.emit(tray_state)
+        if state != self._last_state:  # "error" too: the tray showed it as idle
+            self._last_state = state
+            self.state_changed.emit(state)
 
     def set_hotkey_status(self, message: str) -> None:
         self.hotkey_status_label.setText(message)
@@ -2775,6 +2822,13 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.settings_window.hide()
             self.hide()
+            if not self.settings_manager.get("tray_hint_shown", False):
+                # Once: the window just vanished, and nothing said the app goes on.
+                self.settings_manager.set("tray_hint_shown", True)
+                self.notice.emit(
+                    "Whisper Anywhere is still running",
+                    "The shortcut keeps working. To quit, right-click this icon and choose Exit.",
+                )
             return
         self.settings_window.close()
         self.audio_recorder.close()
