@@ -19,7 +19,7 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 ## Download
 
-**[Download WhisperAnywhere-Setup-0.2.7.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.7/WhisperAnywhere-Setup-0.2.7.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
+**[Download WhisperAnywhere-Setup-0.2.8.exe](https://github.com/aSimpleLife-Lab/whisper-anywhere/releases/download/v0.2.8/WhisperAnywhere-Setup-0.2.8.exe)**: one installer, no administrator rights needed, Windows 10/11 64-bit.
 
 1. Run the installer. The app is not code-signed yet, so Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**.
 2. Start Whisper Anywhere from the Start menu. A five-step tour shows how it works; the orange **!** in the title bar replays it.
@@ -27,12 +27,26 @@ This is not a web app and it does not use a cloud API. Recordings stay in memory
 
 The app downloads speech models on first use (Voz is about 385 MB), so the first setup takes a little while.
 To launch automatically after reboot, click the gear in the title bar and turn on **Start with Windows**.
-The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR need the optional FunASR engine, which is too large to ship in the installer; build from source with FunASR installed to use them.
+The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR need the optional FunASR engine, which is too large to ship in the installer; build from source with FunASR installed to use them. The model list only shows them where that engine is installed.
 
 ## Developer Update Log
 
 <details>
-<summary><strong>Current build - v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, Voz loads twice as fast and while you speak, and the shortcut gets a process of its own</summary>
+<summary><strong>Current build - v0.2.8</strong> - well under half the size, a faster start, and problems that show in the tray</summary>
+
+- Smaller: the installed app is 225 MB instead of 599 MB, and the installer INSTALLER_MB MB instead of 170 MB. The build had been packing libraries the app never loads: numba, SciPy, SymPy, Pillow, FFmpeg twice, and Qt's QML, PDF and software-OpenGL parts. Nothing the app does was removed. With less to load, the app uses about 30 MB less memory and its shortcut helper 22 MB instead of 39 MB
+- Faster start: the shortcut works about 0.9 s sooner after the app starts (2.8 s instead of 3.7 s on the test PC), and after a start in the tray the speech model is loaded about 1.3 s sooner (3.9 s instead of 5.2 s). The shortcut's helper process now starts first instead of last, a start in the tray no longer waits 1.5 s before it loads the model, and the app no longer runs a hidden `cmd.exe` at every start
+- New: problems show in the tray. When a dictation could not be typed while the window was hidden, the error sound was all there was. Now the tray icon gets a red dot, its tooltip says why, and Windows shows a notification, unless a game is in front or the app's own window is
+- New: **Dictation on** in the tray menu pauses and resumes the shortcut without opening the window. The icon shows a grey dot while it is paused
+- New: the first time the window closes to the tray, a notification says that the app is still running and how to quit it
+- Simpler: SenseVoice and Fun-ASR are listed only where they can work. The installer build has no FunASR engine, so picking them there could only fail
+- Simpler: with Voz selected, **Auto / CPU / GPU** and **Whisper precision** are greyed out, because Voz always runs on the CPU. First-run setup asks about hardware only for a model that can use a GPU
+- Build: `scripts\check_bundle.py` fails the build when a packaged file needs a DLL that is not in the package
+
+</details>
+
+<details>
+<summary><strong>v0.2.7</strong> - pasting into Discord and Chrome works again, Tab can be the shortcut, Voz loads twice as fast and while you speak, and the shortcut gets a process of its own</summary>
 
 - Fixed: v0.2.6 pasted nothing into Discord, Chrome, Edge and other Chromium apps, and said "The app did not take the paste". These apps read the clipboard from a background thread that has no window, and v0.2.6's paste check failed on that read and handed them nothing
 - New: **Tab** can be the shortcut. The shortcut box records Tab and Shift+Tab instead of jumping to the next setting. Tab on its own is kept from other apps while it is the shortcut, so starting or stopping a dictation never moves the cursor out of the chat box. Alt+Tab, Shift+Tab and Ctrl+Tab work as usual
@@ -226,10 +240,10 @@ Smaller fixes: dragging Settings by a switch row no longer flips the switch, a r
 
 - Native PySide6 window with LumaDeck's layout in OLED black and orange: frameless shell, custom title bar, three panels
 - Voxel scene that follows the time of day, with a voxel equaliser that shows your voice while you speak, plus a voxel mic wheel
-- System tray support; the tray icon turns orange while listening and cyan while working
-- Global hold-to-talk shortcut: `Ctrl + Alt + Q` or a mouse button (M3, M4, M5, or M1/M2 with a modifier), with optional toggle mode and a pause switch
+- System tray support; the tray icon gets an orange dot while listening, a cyan one while working, a red one after a problem (with the reason in its tooltip and a notification) and a grey one while dictation is paused
+- Global hold-to-talk shortcut: `Ctrl + Alt + Q` or a mouse button (M3, M4, M5, or M1/M2 with a modifier), with optional toggle mode and a pause switch in the window and the tray menu
 - Click-to-record shortcut selection
-- First-run setup for shortcut, model, microphone, and CPU/GPU choice, plus **Run setup again**
+- First-run setup for shortcut, model and microphone (and CPU/GPU for models that can use a GPU), plus **Run setup again**
 - A five-step tour after setup, replayed from the orange **!** in the title bar or **How it works** in Settings
 - Microphone selection
 - Local settings file at `%APPDATA%\Whisper Anywhere\settings.json`
@@ -445,7 +459,9 @@ The shareable installer is built from a lite app build that leaves out FunASR an
 .\scripts\build_installer.ps1
 ```
 
-It runs `build_exe.ps1 -Lite` (output in `dist-lite\`) and creates `dist-installer\WhisperAnywhere-Setup-<version>.exe`, which installs per user under `%LOCALAPPDATA%\Programs\Whisper Anywhere` and removes the **Start with Windows** entry on uninstall.
+It runs `build_exe.ps1 -Lite` (output in `dist-lite\`, about 225 MB) and creates `dist-installer\WhisperAnywhere-Setup-<version>.exe`, which installs per user under `%LOCALAPPDATA%\Programs\Whisper Anywhere` and removes the **Start with Windows** entry on uninstall.
+
+The lite build also leaves out PyAV, which only decodes audio files: the app hands the speech engines samples. After PyInstaller, `build_exe.ps1` deletes the Qt files a widgets app never loads, and `scripts\check_bundle.py` then fails the build if any file left in the package still needs a DLL that is gone.
 
 The app icon and the start/stop sounds are generated: `python scripts\make_icon.py` writes `assets\icon.ico` and `assets\icon.png`, and `python scripts\make_cues.py` writes `assets\sounds\start.wav` and `stop.wav`.
 
