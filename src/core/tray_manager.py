@@ -99,16 +99,21 @@ class TrayManager(QObject):
         self.set_state(self._state)
 
     def show_problem(self, heading: str, detail: str) -> None:
-        """Why a dictation was not typed. With the window in the tray, the
-        error sound was all there was: now the icon turns red, its tooltip
-        says why, and a notification does too unless a game or the app's own
-        window is in front."""
-        self._problem = detail
-        self.set_state("error")
+        """Why a dictation was not typed (heading is "" for a plain error).
+        With the window in the tray, the error sound was all there was: now
+        the icon turns red, its tooltip says why, and a notification does too
+        unless a game or the app's own window is in front."""
+        self._problem = f"{heading}: {detail}" if heading else detail
+        if self._state not in ("listening", "busy"):
+            # While the microphone is open or the text is on its way, the dot
+            # keeps saying so; the window's own state turns it red afterwards.
+            self.set_state("error")
         last, when = self._announced
         if self._can_announce() and (detail != last or time.monotonic() - when > SAME_PROBLEM_SECONDS):
             self._announced = (detail, time.monotonic())
-            self.tray.showMessage(heading, detail, QSystemTrayIcon.MessageIcon.Warning, 6000)
+            self.tray.showMessage(
+                heading or "Dictation problem", detail, QSystemTrayIcon.MessageIcon.Warning, 6000
+            )
 
     def _can_announce(self) -> bool:
         return (

@@ -198,6 +198,10 @@ def main() -> int:
         text_inserter,
         startup_manager,
     )
+    if problems and not start_minimized:
+        # The window that opens says it. Before the tray listens: a
+        # notification saying the same would come up first.
+        window.set_status("Start-up problem", " ".join(problems))
     tray = TrayManager(model_manager)
 
     hotkey.pressed.connect(window.shortcut_pressed)
@@ -267,9 +271,9 @@ def main() -> int:
     show_server.listen(SHOW_SERVER)
 
     tray.show()
-    if problems:  # after the tray is up: a start in the tray says so there
-        window.set_status("Start-up problem", " ".join(problems))
     if start_minimized:
+        if problems:  # the window stays hidden: the tray, now up, says so
+            window.set_status("Start-up problem", " ".join(problems))
         window.hide()
         QTimer.singleShot(0, window.hide)
         QTimer.singleShot(1000, window.hide)

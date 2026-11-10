@@ -17,6 +17,9 @@ from pathlib import Path
 import pefile  # comes with PyInstaller
 
 SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+# Imports whose absence is fine. tbb12.dll: numba (FunASR's, in the full build)
+# has a TBB threading layer that nothing ships, and uses another without it.
+OPTIONAL = {"tbb12.dll"}
 
 
 def imported_dlls(path: Path) -> set[str]:
@@ -34,7 +37,7 @@ def missing_imports(bundle: Path) -> list[str]:
     bundled = {path.name.lower() for path in files}
     problems = []
     for path in sorted(files):
-        for name in sorted(imported_dlls(path) - bundled):
+        for name in sorted(imported_dlls(path) - bundled - OPTIONAL):
             if name.startswith(("api-ms-", "ext-ms-")) or (SYSTEM32 / name).exists():
                 continue  # Windows' own
             problems.append(f"{path.relative_to(bundle)} needs {name}, which is not in the bundle")

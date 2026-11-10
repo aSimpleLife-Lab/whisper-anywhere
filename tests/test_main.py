@@ -132,7 +132,7 @@ def test_openblas_is_held_to_one_thread_before_numpy_loads() -> None:
     assert result.stdout.strip() == "['1']", result.stderr[-2000:]
 
 
-def test_cue_sounds_use_windows_own_audio_backend() -> None:
+def test_the_app_asks_qt_for_windows_own_media_backend() -> None:
     # Qt's default FFmpeg backend loaded five codec DLLs (19 MB of the build)
     # to play four WAV cues. The installer build no longer ships them.
     probe = (
@@ -180,15 +180,17 @@ def test_starting_the_app_runs_no_cmd_exe() -> None:
     assert release  # the version still comes from sys.getwindowsversion()
 
 
-def _run_main(monkeypatch, minimized: bool) -> tuple[list[str], MagicMock]:
-    """main() with every part replaced: what it starts, and in which order."""
+def _run_main(monkeypatch, minimized: bool, notice: str = "") -> tuple[list[str], MagicMock, MagicMock]:
+    """main() with every part replaced: what it starts and connects, and in which order."""
     order: list[str] = []
     saved = {"shortcut": "Ctrl+Alt+Q", "retype_shortcut": "", "debug_logs": False}
-    settings = MagicMock(load_notice="", model_folder_error="")
+    settings = MagicMock(load_notice=notice, model_folder_error="")
     settings.get.side_effect = lambda key, default=None: saved.get(key, default)
     helper = MagicMock()
     helper.start.side_effect = lambda: order.append("helper started")
     window = MagicMock()
+    window.set_status.side_effect = lambda status, detail: order.append(f"status: {status}")
+    window.problem.connect.side_effect = lambda slot: order.append("tray listens for problems")
 
     def build_window(*parts) -> MagicMock:
         order.append("window built")
@@ -217,23 +219,42 @@ def _run_main(monkeypatch, minimized: bool) -> tuple[list[str], MagicMock]:
     monkeypatch.setattr(main, "MainWindow", build_window)
 
     main.main()
-    return order, window
+    return order, window, main.TrayManager.return_value
 
 
 def test_the_shortcut_helper_starts_before_the_window_is_built(monkeypatch) -> None:
     # The helper process takes about a second to boot. Started last, the
     # shortcut came alive a second after everything else was ready.
-    order, _window = _run_main(monkeypatch, minimized=False)
+    order, _window, _tray = _run_main(monkeypatch, minimized=False)
 
-    assert order == ["helper started", "window built"]
+    assert order[:2] == ["helper started", "window built"]
 
 
 def test_a_start_in_the_tray_loads_the_model_without_the_wait(monkeypatch) -> None:
-    _order, hidden = _run_main(monkeypatch, minimized=True)
+    _order, hidden, _tray = _run_main(monkeypatch, minimized=True)
     hidden.warm_up_at_once.assert_called_once_with()
 
-    _order, shown = _run_main(monkeypatch, minimized=False)
+    _order, shown, _tray = _run_main(monkeypatch, minimized=False)
     shown.warm_up_at_once.assert_not_called()  # an opening window stays smooth first
+
+
+def test_the_tray_hears_problems_notices_and_both_dictation_switches(monkeypatch) -> None:
+    _order, window, tray = _run_main(monkeypatch, minimized=True)
+
+    window.problem.connect.assert_called_once_with(tray.show_problem)
+    window.notice.connect.assert_called_once_with(tray.show_message)
+    tray.dictation_toggled.connect.assert_called_once_with(window.dictation_toggle.switch.setChecked)
+    window.hotkey_enabled_changed.connect.assert_any_call(tray.set_dictation)
+
+
+def test_a_start_up_problem_is_announced_only_when_the_window_stays_hidden(monkeypatch) -> None:
+    # Opened from the Start menu, the window shows the problem itself: a
+    # notification saying the same came first.
+    hidden, _window, _tray = _run_main(monkeypatch, minimized=True, notice="The settings file was unreadable.")
+    assert hidden.index("tray listens for problems") < hidden.index("status: Start-up problem")
+
+    opened, _window, _tray = _run_main(monkeypatch, minimized=False, notice="The settings file was unreadable.")
+    assert opened.index("status: Start-up problem") < opened.index("tray listens for problems")
 
 
 def test_a_retype_shortcut_equal_to_the_dictation_shortcut_turns_off() -> None:

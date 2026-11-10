@@ -30,6 +30,13 @@ CloseApplications=yes
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
+[InstallDelete]
+; An update only adds and overwrites files. v0.2.8 stopped shipping about
+; 375 MB of them (numba, SciPy, FFmpeg, Qt's QML parts), which would stay
+; behind unused. Nothing of the user's is in here: settings are in %APPDATA%
+; and models in %LOCALAPPDATA%\Whisper Anywhere.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "..\dist-lite\Whisper Anywhere\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 

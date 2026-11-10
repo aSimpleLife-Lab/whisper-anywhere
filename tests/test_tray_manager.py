@@ -8,6 +8,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"  # the tray icon is never shown
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from core import tray_manager
 from core.tray_manager import TrayManager
 
 
@@ -44,7 +45,7 @@ def test_the_tick_follows_set_current_model(tray) -> None:
 def test_a_problem_stays_on_the_tray_icon_until_the_next_state(tray) -> None:
     # A dictation that failed while the window sat in the tray gave only the
     # error sound: nothing said why.
-    tray.show_problem("Dictation problem", "The app did not take the paste.")
+    tray.show_problem("", "The app did not take the paste.")  # a plain error has no heading
 
     assert tray.tray.toolTip() == "Whisper Anywhere: The app did not take the paste."
     tray.set_state("error")  # the window's state follows: the reason stays
@@ -70,10 +71,12 @@ def test_a_problem_is_announced_once_when_nobody_is_looking(tray, monkeypatch) -
     tray.show_problem("Not typed", "The shortcut seemed stuck.")
     tray.show_problem("Not typed", "The shortcut seemed stuck.")  # the same again, right after
     tray.show_problem("Hotkey error", "The global shortcut stopped working.")
+    tray.show_problem("", "The app did not take the paste.")  # a plain error gets a heading here
 
     assert shown == [
         ("Not typed", "The shortcut seemed stuck."),
         ("Hotkey error", "The global shortcut stopped working."),
+        ("Dictation problem", "The app did not take the paste."),
     ]
 
 
@@ -82,7 +85,7 @@ def test_no_announcement_over_a_game_or_while_the_window_is_in_use(tray, monkeyp
     monkeypatch.setattr(tray, "_can_announce", lambda: False)
     monkeypatch.setattr(tray.tray, "showMessage", lambda *args: shown.append(args))
 
-    tray.show_problem("Dictation problem", "No microphone was found.")
+    tray.show_problem("", "No microphone was found.")
 
     assert shown == []
     assert tray.tray.toolTip() == "Whisper Anywhere: No microphone was found."  # still there to read later
@@ -104,3 +107,30 @@ def test_the_tray_menu_pauses_dictation_and_follows_the_window(tray) -> None:
 
     tray.set_dictation(True)
     assert tray.dictation_action.isChecked() and tray.tray.toolTip() == "Whisper Anywhere"
+
+
+def test_a_problem_while_the_microphone_is_open_keeps_the_listening_dot(tray) -> None:
+    # An update check that failed during a dictation turned the dot red while
+    # the microphone was still open, and it stayed red until the next change.
+    tray.set_state("listening")
+
+    tray.show_problem("Update check failed", "The request timed out.")
+
+    assert tray.tray.toolTip() == "Whisper Anywhere: listening"
+    tray.set_state("error")  # the window's state once the dictation is over
+    assert tray.tray.toolTip() == "Whisper Anywhere: Update check failed: The request timed out."
+
+
+def test_announcements_need_a_visible_tray_no_game_and_no_window_in_use(tray, monkeypatch) -> None:
+    visible, active, game = [True], [None], [False]
+    monkeypatch.setattr(tray.tray, "isVisible", lambda: visible[0])
+    monkeypatch.setattr(tray_manager.QApplication, "activeWindow", staticmethod(lambda: active[0]))
+    monkeypatch.setattr(tray_manager, "foreground_is_fullscreen", lambda: game[0])
+
+    assert tray._can_announce()
+    game[0] = True
+    assert not tray._can_announce()  # never over a game
+    game[0], active[0] = False, object()
+    assert not tray._can_announce()  # the app's own window says it
+    active[0], visible[0] = None, False
+    assert not tray._can_announce()  # no tray icon to announce from

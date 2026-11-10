@@ -34,13 +34,15 @@ The installer build includes Voz and every Whisper model. SenseVoice and Fun-ASR
 <details>
 <summary><strong>Current build - v0.2.8</strong> - well under half the size, a faster start, and problems that show in the tray</summary>
 
-- Smaller: the installed app is 225 MB instead of 599 MB, and the installer INSTALLER_MB MB instead of 170 MB. The build had been packing libraries the app never loads: numba, SciPy, SymPy, Pillow, FFmpeg twice, and Qt's QML, PDF and software-OpenGL parts. Nothing the app does was removed. With less to load, the app uses about 30 MB less memory and its shortcut helper 22 MB instead of 39 MB
-- Faster start: the shortcut works about 0.9 s sooner after the app starts (2.8 s instead of 3.7 s on the test PC), and after a start in the tray the speech model is loaded about 1.3 s sooner (3.9 s instead of 5.2 s). The shortcut's helper process now starts first instead of last, a start in the tray no longer waits 1.5 s before it loads the model, and the app no longer runs a hidden `cmd.exe` at every start
+- Smaller: the installed app is 225 MB instead of 599 MB, and the installer 60 MB instead of 170 MB. The build had been packing libraries the app never loads: numba, SciPy, SymPy, Pillow, FFmpeg twice, and Qt's QML, PDF and software-OpenGL parts. Nothing the app does was removed, and updating over an older version deletes the files that are no longer needed. With less to load, the app uses about 35 MB less memory and its shortcut helper 21 MB instead of 39 MB
+- Faster start: the shortcut works a second sooner after the app starts (2.1 s instead of 3.1 s on the test PC), and after a start in the tray the speech model is loaded 1.6 s sooner (3.0 s instead of 4.6 s). The shortcut's helper process now starts first instead of last, a start in the tray no longer waits 1.5 s before it loads the model, and the app no longer runs a hidden `cmd.exe` at every start
 - New: problems show in the tray. When a dictation could not be typed while the window was hidden, the error sound was all there was. Now the tray icon gets a red dot, its tooltip says why, and Windows shows a notification, unless a game is in front or the app's own window is
 - New: **Dictation on** in the tray menu pauses and resumes the shortcut without opening the window. The icon shows a grey dot while it is paused
 - New: the first time the window closes to the tray, a notification says that the app is still running and how to quit it
 - Simpler: SenseVoice and Fun-ASR are listed only where they can work. The installer build has no FunASR engine, so picking them there could only fail
 - Simpler: with Voz selected, **Auto / CPU / GPU** and **Whisper precision** are greyed out, because Voz always runs on the CPU. First-run setup asks about hardware only for a model that can use a GPU
+- The sounds play through Windows' own media support instead of a bundled FFmpeg. The built-in sounds are the same. A custom sound set by hand in `settings.json` (`start_sound_path`, `stop_sound_path`) must now be in a format Windows itself can play, such as WAV or MP3
+- A quick click of a mouse-button shortcut with no microphone connected still does nothing visible: the error and its sound wait until the press turns out to be a hold
 - Build: `scripts\check_bundle.py` fails the build when a packaged file needs a DLL that is not in the package
 
 </details>

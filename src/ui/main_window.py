@@ -53,7 +53,7 @@ from core.hotkey_listener import (
     shortcut_problem,
     shortcut_warning,
 )
-from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager
+from core.model_manager import LARGE_MODELS, MODEL_INFO, ModelManager, engine_installed
 from core.settings_manager import SettingsManager
 from core.startup_manager import StartupManager, StartupManagerError
 from core.text_inserter import (
@@ -432,9 +432,11 @@ class FirstRunSetupDialog(ShellDialog):
         parent._select_combo_data(self.device_combo, parent.settings_manager.get("device", "cpu"))
         form.addRow("Hardware", self.device_combo)
         self.form = form
+        self.body.addLayout(form)
+        # After the form is in the dialog: showing a row of a form that has no
+        # window yet makes Qt show its label and box as windows of their own.
         self.model_combo.currentIndexChanged.connect(self._show_hardware_row)
         self._show_hardware_row()
-        self.body.addLayout(form)
         self.body.addWidget(
             label(
                 f"Voz is recommended: the fastest and most accurate model here for 25 European "
@@ -742,7 +744,7 @@ class MainWindow(QMainWindow):
         self._undelivered_reason = ""
         self._transcribing_model = ""
         self._start_cue_played = False
-        self._error_cue_pending = False
+        self._pending_error = ""  # a mouse press that found no microphone: shown once it is a hold
         self._load_ahead = False  # this dictation loads Voz while it records
         self._insert_id = 0
         self._active_insert_id = 0
@@ -1821,8 +1823,9 @@ class MainWindow(QMainWindow):
             self.feedback.emit(True)
             if self._load_ahead:
                 self.warm_up_selected_model(while_listening=True)
-        elif self._error_cue_pending:  # the microphone did not open
-            self._error_cue_pending = False
+        elif self._pending_error:  # the microphone did not open
+            message, self._pending_error = self._pending_error, ""
+            self.set_status("Error", message)
             self.cue.emit("error")
 
     def _mouse_hold_shortcut(self) -> bool:
@@ -1894,11 +1897,13 @@ class MainWindow(QMainWindow):
                 )
             except AudioRecorderError as exc:
                 self._append_activity_log("microphone start failed")
-                self.set_status("Error", _error_text(exc))
                 if from_shortcut and self._mouse_hold_shortcut():
-                    self._error_cue_pending = True  # a tap stays a click: only a hold hears it
+                    # A tap stays a click: only a hold sees and hears the error.
+                    # Shown at once, a plain click raised a tray notification.
+                    self._pending_error = _error_text(exc)
                     self._cue_timer.start()
                 else:
+                    self.set_status("Error", _error_text(exc))
                     self.cue.emit("error")
                 return
         self._append_activity_log("listening")
@@ -1989,7 +1994,7 @@ class MainWindow(QMainWindow):
         """A short tap of a mouse shortcut stays a normal click: the recording
         it opened goes away without a sound."""
         self._cue_timer.stop()
-        self._error_cue_pending = False
+        self._pending_error = ""
         if not self._is_listening:
             return
         self._set_listening(False)
@@ -2661,7 +2666,15 @@ class MainWindow(QMainWindow):
                 unusable = parse_shortcut(retype).mouse_trigger or shortcut_problem(retype, retype=True)
                 if unusable or same_shortcut(retype, dictation):
                     raise ValueError(f"the retype shortcut {retype} can't be used")
-            ignored = self.settings_manager.import_portable(values)
+            left_out: list[str] = []
+            if isinstance(values, dict) and "selected_model" in values:
+                # A model whose engine this copy lacks (SenseVoice from a build
+                # with FunASR): the list here does not show it, so it stays out.
+                model = self.model_manager.normalize_model_name(str(values["selected_model"]))
+                if model in MODEL_INFO and not engine_installed(MODEL_INFO[model].engine):
+                    values = {key: value for key, value in values.items() if key != "selected_model"}
+                    left_out.append("selected_model (its speech engine is not installed here)")
+            ignored = left_out + self.settings_manager.import_portable(values)
         except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:
             show_message(self, "Settings import failed", f"Could not import settings: {exc}")
             return
@@ -2733,8 +2746,9 @@ class MainWindow(QMainWindow):
         self.status_detail.style().unpolish(self.status_detail)
         self.status_detail.style().polish(self.status_detail)
         if self._status_is_error:
-            # Before the state: the tray's red dot then already knows why.
-            self.problem.emit("Dictation problem" if status == "Error" else status, detail)
+            # Before the state: the tray's red dot then already knows why. A
+            # plain error has no heading of its own.
+            self.problem.emit("" if status == "Error" else status, detail)
         self._refresh_visual_state()
 
     def _visual_state(self) -> str:
