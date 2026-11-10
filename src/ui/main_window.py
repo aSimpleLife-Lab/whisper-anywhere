@@ -321,8 +321,9 @@ def _tutorial_pages(shortcut: str, retype: str = "Ctrl+Alt+V") -> list[tuple[str
             "Watch it listen",
             "While you speak, the voxel columns rise with your voice and the wheel counts the seconds. The "
             "cyan scanner means your words are being turned into text, usually in well under a second.\n\n"
-            "The tray icon gets an orange dot while it listens and a cyan dot while it works. The Dictation on "
-            "switch pauses the shortcut.",
+            "The tray icon gets an orange dot while it listens, a cyan dot while it works and a red dot when "
+            "something went wrong: point at it to read why. The Dictation on switch, here and in the tray "
+            "menu, pauses the shortcut.",
         ),
         (
             "Speech models",
@@ -457,7 +458,8 @@ class FirstRunSetupDialog(ShellDialog):
         """Voz always runs on the CPU: Hardware is asked only for a model that can use a GPU."""
         name = str(self.model_combo.currentData() or "voz")
         self.form.setRowVisible(self.device_combo, MODEL_INFO[name].engine != "voz")
-        self.adjustSize()
+        if self.isVisible():  # before the first show, Qt sizes it for all that is in it
+            self.fit_content()
 
 
 class SettingsWindow(ShellDialog):

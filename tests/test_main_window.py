@@ -946,7 +946,7 @@ def test_controls_that_do_nothing_for_the_selected_model_are_switched_off() -> N
 
 def test_setup_asks_about_hardware_only_for_models_that_use_it() -> None:
     # Voz always runs on the CPU: one question fewer on the first run.
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 
     from core.model_manager import ModelManager
 
@@ -962,11 +962,19 @@ def test_setup_asks_about_hardware_only_for_models_that_use_it() -> None:
 
     dialog = mw.FirstRunSetupDialog(parent)
 
+    def scrolls() -> bool:  # part of the dialog is cut off
+        QApplication.processEvents()
+        return any(area.verticalScrollBar().maximum() > 0 for area in dialog.findChildren(QScrollArea))
+
     assert not dialog.form.isRowVisible(dialog.device_combo)
+    dialog.show()
+    assert not scrolls()  # sized for everything in it, the buttons too
     dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("small"))
     assert dialog.form.isRowVisible(dialog.device_combo)
+    assert not scrolls()  # and it grows with the extra row
     dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("voz"))
     assert not dialog.form.isRowVisible(dialog.device_combo)
+    dialog.close()
 
 
 def test_text_with_no_app_to_type_into_stays_in_last_transcription() -> None:

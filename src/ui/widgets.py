@@ -505,6 +505,13 @@ class ShellDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.viewport().setAutoFillBackground(False)
         outer.addWidget(scroll, 1)
+        self._scroll = scroll
+
+    def fit_content(self) -> None:
+        """Resize to the content after it changed while the dialog is shown.
+        Qt does not ask a scroll area for its size hint again by itself."""
+        self._scroll.updateGeometry()
+        self.adjustSize()
 
     def showEvent(self, event) -> None:
         # Never taller than the screen: past that the body scrolls instead of squeezing.
